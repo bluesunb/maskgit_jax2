@@ -289,14 +289,14 @@ if __name__ == "__main__":
     disc_start = 10000
     percept_loss_weight = 1.0
     recon_loss_weight = 1.0
+    loss_config = LossWeights(disc_start=100)
 
     # with fake_pmap_and_jit():
-    #     main(rng, disc_factor, disc_start, percept_loss_weight, recon_loss_weight)
-    loss_config = LossWeights(disc_start=100)
-    # main(rng, batch_size=8, num_workers=0, loss_config=loss_config)
+    #     main(rng, img_size=96, batch_size=2, num_workers=8, n_epochs=1, loss_config=loss_config)
+    main(rng, img_size=96, batch_size=2, num_workers=8, n_epochs=1, loss_config=loss_config)
 
     # with Profile() as pr:
-    main(rng, batch_size=64, num_workers=8, n_epochs=1, loss_config=loss_config)
+    # main(rng, batch_size=64, num_workers=8, n_epochs=1, loss_config=loss_config)
 
     stats = Stats(pr, stream=open('profile_stats.txt', 'w'))
     stats.strip_dirs()
