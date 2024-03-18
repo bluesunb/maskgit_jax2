@@ -1,4 +1,4 @@
-import os
+import os, shutil
 import numpy as np
 import jax, jax.numpy as jp
 import flax, optax
@@ -53,6 +53,15 @@ def make_state(rngs, model, tx, init_batch_shape):
                               tx=tx,
                               extra_variables=variables)
 
+    return state
+
+
+def save_state(state: TrainState, path: str, step: int):
+    if os.path.exists(path):
+        shutil.rmtree(path)
+    state = flax.jax_utils.unreplicate(state)
+    state = jax.device_get(state)
+    state = checkpoints.save_checkpoint(path, state, step)
     return state
 
 
@@ -230,7 +239,7 @@ def main(rng,
     disc_state = flax.jax_utils.replicate(disc_state)
     unreplicate_dict = lambda x: jax.tree_map(lambda y: jax.device_get(y[0]), x)
 
-    wandb.init(project='maskgit', dir=os.path.expanduser('./wandb'), name=f'maskgit_{get_now_str()}')
+    wandb.init(project='maskgit', dir=os.path.abspath('./wandb'), name=f'maskgit_{get_now_str()}')
     run = wandb.run
 
     for epoch in range(n_epochs):
@@ -248,22 +257,21 @@ def main(rng,
 
             if step % 1000 == 0:
                 # Save model
-                checkpoints.save_checkpoint_multiprocess(f'./checkpoints/vqgan_{epoch}_{step}.ckpt',
-                                                         target=vqgan_state, step=vqgan_state.step[0], keep=3)
-                checkpoints.save_checkpoint_multiprocess(f'./checkpoints/disc_{epoch}_{step}.ckpt',
-                                                         target=disc_state, step=disc_state.step[0], keep=3)
+                ckpt_path = os.path.abspath('./checkpoints/')
+                save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_{epoch}_{step}.ckpt'), vqgan_state.step[0])
+                save_state(disc_state, os.path.join(ckpt_path, f'disc_{epoch}_{step}.ckpt'), disc_state.step[0])
                 print(f'Model saved ({epoch}, {step})')
 
             if step % 100 == 0:
                 # Save image
-                x_recon, recon_info = jit_reconstruct_image(vqgan_state, disc_state, sample_batch, rng)
+                x_recon, recon_info = jit_reconstruct_image(flax.jax_utils.unreplicate(vqgan_state),
+                                                            flax.jax_utils.unreplicate(disc_state),
+                                                            sample_batch, rng)
                 recon_info = jax.tree_map(lambda x: x.squeeze().item(), recon_info)
                 run.log({'reconstructions': wandb.Image(array_to_img(x_recon[0])), **recon_info}, step=step)
 
-    checkpoints.save_checkpoint_multiprocess(f'./checkpoints/vqgan_{epoch}_{step}.ckpt',
-                                             target=vqgan_state, step=vqgan_state.step[0], keep=3)
-    checkpoints.save_checkpoint_multiprocess(f'./checkpoints/disc_{epoch}_{step}.ckpt',
-                                             target=disc_state, step=disc_state.step[0], keep=3)
+    save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_{epoch}_{step}.ckpt'), vqgan_state.step[0])
+    save_state(disc_state, os.path.join(ckpt_path, f'disc_{epoch}_{step}.ckpt'), disc_state.step[0])
     print(f'Model saved ({epoch}, {step})')
     run.finish()
 
