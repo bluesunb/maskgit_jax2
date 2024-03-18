@@ -211,7 +211,7 @@ def main(rng,
     n_epochs = 50
     n_steps = len(train_loader)
 
-    loss_config = LossWeights()
+    loss_config = LossWeights(disc_start=200)
     parallel_train_step = jax.pmap(partial(train_step, lpips=lpips, config=loss_config, pmap_axis='batch'), axis_name='batch')
 
     vqgan_state = flax.jax_utils.replicate(vqgan_state)
@@ -225,6 +225,11 @@ def main(rng,
             rng, device_rngs = jax.random.split(rng)
             device_rngs = shard_prng_key(device_rngs)
             (vqgan_state, disc_state), info = parallel_train_step(vqgan_state, disc_state, batch, device_rngs)
+
+            info = unreplicate_dict(info)
+            pbar.set_postfix({'vq_loss': info['nll_loss'] + info['g_loss'],
+                              'disc_loss': info['d_loss'],
+                              'disc_weight': info['disc_weight']})
 
             if step % 1000 == 0:
                 # Save model
@@ -244,6 +249,6 @@ if __name__ == "__main__":
     percept_loss_weight = 1.0
     recon_loss_weight = 1.0
 
-    with fake_pmap_and_jit():
-        main(rng, disc_factor, disc_start, percept_loss_weight, recon_loss_weight)
-    # main(rng, disc_factor, disc_start, percept_loss_weight, recon_loss_weight)
+    # with fake_pmap_and_jit():
+    #     main(rng, disc_factor, disc_start, percept_loss_weight, recon_loss_weight)
+    main(rng, disc_factor, disc_start, percept_loss_weight, recon_loss_weight)
