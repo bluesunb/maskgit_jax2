@@ -153,23 +153,15 @@ def train_step(vqgan_state: TrainState,
 
 
 def main(rng,
-         disc_factor=1.0,
-         disc_start=10000,
-         percept_loss_weight=1.0,
-         recon_loss_weight=1.0, ):
-    img_size = 256
-    batch_size = 1
-    num_workers = 8
+         img_size: int = 256,
+         batch_size: int = 8,
+         num_workers: int = 8,
+         loss_config: LossWeights = LossWeights()):
 
     enc_config = AutoencoderConfig(out_channels=256)
     dec_config = AutoencoderConfig(out_channels=3)
     vq_config = VQConfig(codebook_size=1024)
 
-    # rng_names = {'vqgan': ('dropout', ),
-    #              'disc': ()}
-    rng_names = ('dropout',)
-
-    # Prepare model
     gan = VQGAN(enc_config, dec_config, vq_config)
     discriminator = Discriminator(emb_channels=64, n_layers=3)
     # trainer_model = VQGANTrainer(gan, discriminator)
@@ -211,7 +203,6 @@ def main(rng,
     n_epochs = 50
     n_steps = len(train_loader)
 
-    loss_config = LossWeights(disc_start=200)
     parallel_train_step = jax.pmap(partial(train_step, lpips=lpips, config=loss_config, pmap_axis='batch'), axis_name='batch')
 
     vqgan_state = flax.jax_utils.replicate(vqgan_state)
@@ -251,4 +242,5 @@ if __name__ == "__main__":
 
     # with fake_pmap_and_jit():
     #     main(rng, disc_factor, disc_start, percept_loss_weight, recon_loss_weight)
-    main(rng, disc_factor, disc_start, percept_loss_weight, recon_loss_weight)
+    loss_config = LossWeights(disc_start=1000)
+    main(rng, batch_size=8, num_workers=8, loss_config=loss_config)
