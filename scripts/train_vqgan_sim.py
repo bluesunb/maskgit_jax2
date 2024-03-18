@@ -11,7 +11,7 @@ import torchvision.transforms as T
 
 from models.vqgan import VQGAN, Discriminator
 from utils.metrics import LPIPS
-from utils.dataset import load_data
+from utils.dataset import load_folder_data, load_stl
 from config import VQConfig, AutoencoderConfig, LossWeights
 from scripts.common import TrainState
 
@@ -221,10 +221,16 @@ def main(rng,
                                 T.CenterCrop((img_size, img_size)),
                                 T.ToTensor()])
 
-    train_loader = load_data(os.path.expanduser("~/PycharmProjects/Datasets/ILSVRC2012_img_test/test"),
-                             batch_size=batch_size, shuffle=True, num_workers=num_workers, transform=train_transform)
-    test_loader = load_data(os.path.expanduser("~/PycharmProjects/Datasets/ILSVRC2012_img_test/test"),
-                            batch_size=batch_size, shuffle=False, num_workers=num_workers, transform=test_transform)
+    # train_loader = load_folder_data(os.path.expanduser("~/PycharmProjects/Datasets/ILSVRC2012_img_test/test"),
+    #                                 batch_size=batch_size, shuffle=True, num_workers=num_workers, transform=train_transform)
+    # test_loader = load_folder_data(os.path.expanduser("~/PycharmProjects/Datasets/ILSVRC2012_img_test/test"),
+    #                                batch_size=batch_size, shuffle=False, num_workers=num_workers, transform=test_transform)
+
+    train_loader = load_stl(os.path.expanduser('~/PycharmProjects/Datasets'), 'train',
+                            batch_size=batch_size, shuffle=True, num_workers=num_workers)
+
+    test_loader = load_stl(os.path.expanduser('~/PycharmProjects/Datasets'), 'test',
+                           batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
     sample_batch = next(iter(test_loader))
     sample_batch = sample_batch[0:1]

@@ -40,7 +40,8 @@ class AutoencoderConfig:
     channels: int = 128
     out_channels: int = 3
     # channel_multipliers: Tuple[int, ...] = (1, 1, 2, 2, 4)
-    channel_multipliers: Tuple[int, ...] = (1, 1, 2, 2, 2)
+    # channel_multipliers: Tuple[int, ...] = (1, 1, 2, 2, 2)
+    channel_multipliers: Tuple[int, ...] = (1,1,2,2,4,4)
     attn_resolutions: Tuple[int, ...] = (16, )
     n_blocks: int = 2
     dropout_rate: float = 0.0

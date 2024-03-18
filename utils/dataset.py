@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import torchvision.transforms as T
+from torchvision import datasets as dset
 import torch as th
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
@@ -31,8 +32,25 @@ class ImagePaths(Dataset):
         return img
     
 
-def load_data(path: str, batch_size: int, shuffle: bool = False, num_workers: int = 0, transform=None):
+def load_folder_data(path: str, batch_size: int, shuffle: bool = False, num_workers: int = 0, transform=None):
     train_set = ImagePaths(path, transform=transform)
+    loader = DataLoader(train_set, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, collate_fn=numpy_collate, drop_last=True)
+    return loader
+
+
+def load_stl(data_dir, split, batch_size, shuffle=False, num_workers=0, transform=None):
+    if transform is None:
+        if split == 'train':
+            transform = T.Compose([T.Resize(96),
+                                   T.RandomHorizontalFlip(),
+                                   T.ToTensor(),
+                                   T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+        else:
+            transform = T.Compose([T.Resize(96),
+                                   T.ToTensor(),
+                                   T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+
+    train_set = dset.STL10(data_dir, split=split, transform=transform, download=False)
     loader = DataLoader(train_set, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, collate_fn=numpy_collate, drop_last=True)
     return loader
 
@@ -52,7 +70,7 @@ if __name__ == "__main__":
         return x
 
     transform = T.Compose([T.Resize(256), T.CenterCrop(256), T.ToTensor()])
-    th_loader = load_data(path, 64, transform=transform, num_workers=8)
+    th_loader = load_folder_data(path, 64, transform=transform, num_workers=8)
 
     st = time()
     for i, img in tqdm(enumerate(th_loader), total=30):
