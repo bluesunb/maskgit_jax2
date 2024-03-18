@@ -1,14 +1,12 @@
 import os
 import numpy as np
-import jax
-import jax.numpy as jp
-import flax
-import flax.linen as nn
-import optax
+import jax, jax.numpy as jp
+import flax, optax
 from flax.training import checkpoints
 from flax.training.common_utils import shard, shard_prng_key
 from tqdm import tqdm
 
+import wandb
 import torchvision.transforms as T
 
 from models.vqgan import VQGAN, Discriminator
@@ -17,8 +15,15 @@ from utils.dataset import load_data
 from config import VQConfig, AutoencoderConfig, LossWeights
 from scripts.common import TrainState
 
+from datetime import datetime
 from functools import partial
 from typing import Sequence, Union, Dict, Callable
+
+from utils.viz import array_to_img, plot_to_img
+
+
+def get_now_str():
+    return datetime.now().strftime("%m%d-%H%M")
 
 
 def make_rngs(rng: jp.ndarray,
@@ -152,6 +157,18 @@ def train_step(vqgan_state: TrainState,
     return (vqgan_state, disc_state), result
 
 
+def reconstruct_image(vqgan_state, disc_state, batch, rng, lpips):
+    rng_names = {'vqgan': ('dropout', ), 'disc': ()}
+    x_recon, q_loss, result = vqgan_state(batch, train=False, rngs=make_rngs(rng, rng_names['vqgan']))
+    percept_loss = lpips(x_recon, batch).mean()
+    recon_loss = optax.l2_loss(x_recon, batch).mean()
+
+    logits_fake = disc_state(x_recon, train=False, rngs=make_rngs(rng, rng_names['disc']))
+    loss_fake = jp.mean(jax.nn.relu(1.0 + logits_fake))
+
+    return x_recon, {'recon_loss': recon_loss, 'percept_loss': percept_loss, 'loss_fake': loss_fake}
+
+
 def main(rng,
          img_size: int = 256,
          batch_size: int = 8,
@@ -200,14 +217,21 @@ def main(rng,
     test_loader = load_data(os.path.expanduser("~/PycharmProjects/Datasets/ILSVRC2012_img_test/test"),
                             batch_size=batch_size, shuffle=False, num_workers=num_workers, transform=test_transform)
 
+    sample_batch = next(iter(test_loader))
+    sample_batch = sample_batch[0:1]
+
     n_epochs = 50
     n_steps = len(train_loader)
 
     parallel_train_step = jax.pmap(partial(train_step, lpips=lpips, config=loss_config, pmap_axis='batch'), axis_name='batch')
+    jit_reconstruct_image = jax.jit(partial(reconstruct_image, lpips=lpips))
 
     vqgan_state = flax.jax_utils.replicate(vqgan_state)
     disc_state = flax.jax_utils.replicate(disc_state)
     unreplicate_dict = lambda x: jax.tree_map(lambda y: jax.device_get(y[0]), x)
+
+    wandb.init(project='maskgit', dir=os.path.expanduser('./wandb'), name=f'maskgit_{get_now_str()}')
+    run = wandb.run
 
     for epoch in range(n_epochs):
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{n_epochs}")
@@ -224,11 +248,24 @@ def main(rng,
 
             if step % 1000 == 0:
                 # Save model
-                pass
+                checkpoints.save_checkpoint_multiprocess(f'./checkpoints/vqgan_{epoch}_{step}.ckpt',
+                                                         target=vqgan_state, step=vqgan_state.step[0], keep=3)
+                checkpoints.save_checkpoint_multiprocess(f'./checkpoints/disc_{epoch}_{step}.ckpt',
+                                                         target=disc_state, step=disc_state.step[0], keep=3)
+                print(f'Model saved ({epoch}, {step})')
 
             if step % 100 == 0:
                 # Save image
-                pass
+                x_recon, recon_info = jit_reconstruct_image(vqgan_state, disc_state, sample_batch, rng)
+                recon_info = jax.tree_map(lambda x: x.squeeze().item(), recon_info)
+                run.log({'reconstructions': wandb.Image(array_to_img(x_recon[0])), **recon_info}, step=step)
+
+    checkpoints.save_checkpoint_multiprocess(f'./checkpoints/vqgan_{epoch}_{step}.ckpt',
+                                             target=vqgan_state, step=vqgan_state.step[0], keep=3)
+    checkpoints.save_checkpoint_multiprocess(f'./checkpoints/disc_{epoch}_{step}.ckpt',
+                                             target=disc_state, step=disc_state.step[0], keep=3)
+    print(f'Model saved ({epoch}, {step})')
+    run.finish()
 
 
 if __name__ == "__main__":
