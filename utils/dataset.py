@@ -8,12 +8,16 @@ from PIL import Image
 
 
 def numpy_collate(batch):
-    if isinstance(batch[0], np.ndarray):
+    if isinstance(batch[0], (np.ndarray, th.Tensor)):
         return np.stack(batch).transpose(0, 2, 3, 1)
     elif isinstance(batch[0], (tuple, list)):
         transposed = zip(*batch)
         return [numpy_collate(samples) for samples in transposed]
-    return np.array(batch).transpose(0, 2, 3, 1)
+
+    data = np.array(batch)
+    if data.ndim == 4:
+        return data.transpose(0, 2, 3, 1)
+    return data
     
 
 class ImagePaths(Dataset):

@@ -85,6 +85,7 @@ def hinge_d_loss(logits_fake, logits_real = None):
 
     return (loss_fake + loss_real) * 0.5
 
+
 def train_step(vqgan_state: TrainState,
                disc_state: TrainState,
                batch: jp.ndarray,
@@ -182,7 +183,32 @@ def main(rng,
          img_size: int = 256,
          batch_size: int = 8,
          num_workers: int = 8,
+         n_epochs: int = 50,
          loss_config: LossWeights = LossWeights()):
+
+    # Load dataset
+    train_transform = T.Compose([T.Resize(img_size),
+                                 T.RandomCrop((img_size, img_size)),
+                                 T.RandomHorizontalFlip(),
+                                 T.ToTensor()])
+
+    test_transform = T.Compose([T.Resize(img_size),
+                                T.CenterCrop((img_size, img_size)),
+                                T.ToTensor()])
+
+    # train_loader = load_folder_data(os.path.expanduser("~/PycharmProjects/Datasets/ILSVRC2012_img_test/test"),
+    #                                 batch_size=batch_size, shuffle=True, num_workers=num_workers, transform=train_transform)
+    # test_loader = load_folder_data(os.path.expanduser("~/PycharmProjects/Datasets/ILSVRC2012_img_test/test"),
+    #                                batch_size=batch_size, shuffle=False, num_workers=num_workers, transform=test_transform)
+
+    train_loader = load_stl(os.path.expanduser('~/PycharmProjects/Datasets'), 'train',
+                            batch_size=batch_size, shuffle=True, num_workers=num_workers)
+
+    test_loader = load_stl(os.path.expanduser('~/PycharmProjects/Datasets'), 'test',
+                           batch_size=batch_size, shuffle=False, num_workers=num_workers)
+
+    sample_batch = next(iter(test_loader))
+    sample_batch = shard(sample_batch[0][0:4])
 
     enc_config = AutoencoderConfig(out_channels=256)
     dec_config = AutoencoderConfig(out_channels=3)
@@ -211,35 +237,8 @@ def main(rng,
         lpips.init(rng, jp.ones((1, img_size, img_size, 3)), jp.ones((1, img_size, img_size, 3)))
     )
 
-    # Load dataset
-    train_transform = T.Compose([T.Resize(img_size),
-                                 T.RandomCrop((img_size, img_size)),
-                                 T.RandomHorizontalFlip(),
-                                 T.ToTensor()])
-
-    test_transform = T.Compose([T.Resize(img_size),
-                                T.CenterCrop((img_size, img_size)),
-                                T.ToTensor()])
-
-    # train_loader = load_folder_data(os.path.expanduser("~/PycharmProjects/Datasets/ILSVRC2012_img_test/test"),
-    #                                 batch_size=batch_size, shuffle=True, num_workers=num_workers, transform=train_transform)
-    # test_loader = load_folder_data(os.path.expanduser("~/PycharmProjects/Datasets/ILSVRC2012_img_test/test"),
-    #                                batch_size=batch_size, shuffle=False, num_workers=num_workers, transform=test_transform)
-
-    train_loader = load_stl(os.path.expanduser('~/PycharmProjects/Datasets'), 'train',
-                            batch_size=batch_size, shuffle=True, num_workers=num_workers)
-
-    test_loader = load_stl(os.path.expanduser('~/PycharmProjects/Datasets'), 'test',
-                           batch_size=batch_size, shuffle=False, num_workers=num_workers)
-
-    sample_batch = next(iter(test_loader))
-    sample_batch = sample_batch[0:1]
-
-    n_epochs = 50
-    n_steps = len(train_loader)
-
     parallel_train_step = jax.pmap(partial(train_step, lpips=lpips, config=loss_config, pmap_axis='batch'), axis_name='batch')
-    jit_reconstruct_image = jax.jit(partial(reconstruct_image, lpips=lpips))
+    parallel_recon_step = jax.pmap(partial(reconstruct_image, lpips=lpips))
 
     vqgan_state = flax.jax_utils.replicate(vqgan_state)
     disc_state = flax.jax_utils.replicate(disc_state)
@@ -251,7 +250,7 @@ def main(rng,
     for epoch in range(n_epochs):
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{n_epochs}")
         for step, batch in enumerate(pbar):
-            batch = shard(batch)
+            batch = shard(batch[0])
             rng, device_rngs = jax.random.split(rng)
             device_rngs = shard_prng_key(device_rngs)
             (vqgan_state, disc_state), info = parallel_train_step(vqgan_state, disc_state, batch, device_rngs)
@@ -261,7 +260,7 @@ def main(rng,
                               'disc_loss': info['d_loss'],
                               'disc_weight': info['disc_weight']})
 
-            if step % 1000 == 0:
+            if step % 1000 == 0 and step > 0:
                 # Save model
                 ckpt_path = os.path.abspath('./checkpoints/')
                 save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_{epoch}_{step}.ckpt'), vqgan_state.step[0])
@@ -270,11 +269,9 @@ def main(rng,
 
             if step % 100 == 0:
                 # Save image
-                x_recon, recon_info = jit_reconstruct_image(flax.jax_utils.unreplicate(vqgan_state),
-                                                            flax.jax_utils.unreplicate(disc_state),
-                                                            sample_batch, rng)
-                recon_info = jax.tree_map(lambda x: x.squeeze().item(), recon_info)
-                run.log({'reconstructions': wandb.Image(array_to_img(x_recon[0])), **recon_info}, step=step)
+                x_recon, recon_info = parallel_recon_step(vqgan_state, disc_state, sample_batch, device_rngs)
+                recon_info = unreplicate_dict(recon_info)
+                run.log({'reconstructions': wandb.Image(x_recon[0].squeeze()), **recon_info}, step=step)
 
     save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_{epoch}_{step}.ckpt'), vqgan_state.step[0])
     save_state(disc_state, os.path.join(ckpt_path, f'disc_{epoch}_{step}.ckpt'), disc_state.step[0])
@@ -284,6 +281,8 @@ def main(rng,
 
 if __name__ == "__main__":
     from chex import fake_pmap_and_jit
+    from cProfile import Profile
+    from pstats import Stats
 
     rng = jax.random.PRNGKey(0)
     disc_factor = 1.0
@@ -293,5 +292,15 @@ if __name__ == "__main__":
 
     # with fake_pmap_and_jit():
     #     main(rng, disc_factor, disc_start, percept_loss_weight, recon_loss_weight)
-    loss_config = LossWeights(disc_start=1000)
-    main(rng, batch_size=8, num_workers=8, loss_config=loss_config)
+    loss_config = LossWeights(disc_start=100)
+    # main(rng, batch_size=8, num_workers=0, loss_config=loss_config)
+
+    # with Profile() as pr:
+    main(rng, batch_size=64, num_workers=8, n_epochs=1, loss_config=loss_config)
+
+    stats = Stats(pr, stream=open('profile_stats.txt', 'w'))
+    stats.strip_dirs()
+    stats.sort_stats('cumulative')
+    stats.print_stats()
+    stats.dump_stats('profile_stats.pstat')
+    print('Done')
