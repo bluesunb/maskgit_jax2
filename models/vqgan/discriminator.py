@@ -26,10 +26,21 @@ class Discriminator(nn.Module):
         
         for i in range(1, self.n_layers + 1):
             c = self.emb_channels * min(2 ** i, 8)
-            x = nn.Conv(c, (4, 4), (2, 2), padding=1, use_bias=False)(x)
+            s = 2 if i < self.n_layers else 1
+            x = nn.Conv(c, (4, 4), (s, s), padding=1, use_bias=False)(x)
             # x = nn.BatchNorm(momentum=0.9, epsilon=1e-5, axis=(0, -1))(x, use_running_average=False)
             x = nn.BatchNorm()(x, use_running_average=not train)
             x = nn.leaky_relu(x, negative_slope=0.2)
 
         x = nn.Conv(1, (4, 4), (1, 1), padding=1)(x)
         return x
+
+
+if __name__ == "__main__":
+    rng = jax.random.PRNGKey(0)
+    rng, init_rng = jax.random.split(rng)
+    x = jax.random.normal(rng, (1, 256, 256, 3))
+    model = Discriminator()
+    params = model.init(init_rng, x)
+    y = model.apply(params, x, train=False)
+    print(y.shape)

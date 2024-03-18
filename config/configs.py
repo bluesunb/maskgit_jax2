@@ -22,10 +22,14 @@ class VQConfig:
 
 @dataclass
 class TransformerConfig:
-    emb_dim: int = 768
+    # emb_dim: int = 768
+    emb_dim: int = 128
+    # n_heads: int = 12
     n_heads: int = 12
-    n_layers: int = 24
-    intermediate_dim: int = 4 * 768
+    # n_layers: int = 24
+    n_layers: int = 3
+    # intermediate_dim: int = 4 * 768
+    intermediate_dim: int = 4 * 128
     attn_pdrop: float = 0.1
     resid_pdrop: float = 0.1
     ff_pdrop: float = 0.1
@@ -35,7 +39,8 @@ class TransformerConfig:
 class AutoencoderConfig:
     channels: int = 128
     out_channels: int = 3
-    channel_multipliers: Tuple[int, ...] = (1, 1, 2, 2, 4)
+    # channel_multipliers: Tuple[int, ...] = (1, 1, 2, 2, 4)
+    channel_multipliers: Tuple[int, ...] = (1, 1, 2, 2, 2)
     attn_resolutions: Tuple[int, ...] = (16, )
     n_blocks: int = 2
     dropout_rate: float = 0.0

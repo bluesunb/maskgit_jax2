@@ -52,12 +52,22 @@ def make_state(rngs, model, tx, init_batch_shape):
 
 
 def vanilla_d_loss(logits_fake, logits_real = None):
-    if logits_real is not None:
+    if logits_real is None:
         loss_fake = jp.mean(jax.nn.softplus(-logits_fake)) * 2
         loss_real = 0
     else:
         loss_fake = jp.mean(jax.nn.softplus(logits_fake))
         loss_real = jp.mean(jax.nn.softplus(-logits_real))
+
+    return (loss_fake + loss_real) * 0.5
+
+
+def hinge_d_loss(logits_fake, logits_real = None):
+    loss_fake = jp.mean(jax.nn.relu(1.0 + logits_fake))
+    if logits_real is None:
+        loss_real = 0
+    else:
+        loss_real = jp.mean(jax.nn.relu(1.0 - logits_real))
 
     return (loss_fake + loss_real) * 0.5
 
@@ -78,7 +88,7 @@ def train_step(vqgan_state: TrainState,
 
         log_laplace_loss = jp.mean(jp.abs(x_recon - batch))
         log_gaussian_loss = optax.l2_loss(x_recon, batch).mean()
-        percept_loss = lpips(batch, x_recon).mean()
+        percept_loss = lpips(batch, x_recon).mean()     # it is zero...
 
         nll_loss = log_laplace_loss * config.log_laplace_loss + \
                     log_gaussian_loss * config.log_gaussian_loss + \
@@ -88,9 +98,9 @@ def train_step(vqgan_state: TrainState,
         return loss, (x_recon, result)
 
     def loss_fn_generate(params):
-        gen_loss = make_rngs(rng, rng_names['vqgan'])
+        gen_rngs = make_rngs(rng, rng_names['vqgan'])
         disc_rngs = make_rngs(rng, rng_names['disc'])
-        x_recon, q_loss, result = vqgan_state(batch, train=True, rngs=gen_loss, params=params)
+        x_recon, q_loss, result = vqgan_state(batch, train=True, rngs=gen_rngs, params=params)
         gen_loss = disc_state(x_recon, train=False, rngs=disc_rngs)
         gen_loss = vanilla_d_loss(gen_loss)
         return gen_loss
@@ -102,8 +112,10 @@ def train_step(vqgan_state: TrainState,
         x_recon, q_loss, result = vqgan_state(batch, train=False, rngs=g_rngs)
         x_recon = jax.lax.stop_gradient(x_recon)
 
-        disc_real = disc_state(batch, train=True, rngs=d_rngs, params=params)
-        disc_fake = disc_state(x_recon, train=True, rngs=d_rngs, params=params)
+        disc_real, updates = disc_state(batch, train=True, rngs=d_rngs,
+                                        params=params, mutable=['batch_stats'])
+        disc_fake, updates = disc_state(x_recon, train=True, rngs=d_rngs,
+                                        params=params, extra_variables=updates, mutable=['batch_stats'])
 
         def positive_branch(args):
             disc_real, disc_fake = args
@@ -119,15 +131,15 @@ def train_step(vqgan_state: TrainState,
         disc_loss = jax.lax.cond(disc_factor, positive_branch, negative_branch, (disc_real, disc_fake))
         disc_weight = jp.where(disc_state.step > config.disc_start, 1.0, 0.0)
         disc_loss = jp.mean(disc_loss * disc_weight)
-        return disc_loss, {'real': disc_real, 'fake': disc_fake}
+        return disc_loss, (updates, {'real': disc_real, 'fake': disc_fake})
 
     out, nll_grads = jax.value_and_grad(loss_fn_nll, has_aux=True)(vqgan_state.params)
     nll_loss, (x_recon, vq_result) = out
 
-    gen_loss, gen_grads = jax.value_and_grad(loss_fn_generate)(vqgan_state.params, mutable=['batch_stats'])
+    gen_loss, gen_grads = jax.value_and_grad(loss_fn_generate)(vqgan_state.params)
 
-    out, disc_grads = jax.value_and_grad(loss_fn_discriminate, has_aux=True)(disc_state.params, mutable=['batch_stats'])
-    disc_loss, disc_result = out
+    out, disc_grads = jax.value_and_grad(loss_fn_discriminate, has_aux=True)(disc_state.params)
+    disc_loss, (updates, disc_result) = out
 
     if pmap_axis is not None:
         nll_grads = jax.lax.pmean(nll_grads, axis_name=pmap_axis)
@@ -143,8 +155,8 @@ def train_step(vqgan_state: TrainState,
 
         x_recon = x_recon[0]
 
-    last_layer_nll = jp.linalg.norm(nll_grads['params']['decoder']['ConvOut']['kernel'])
-    last_layer_gen = jp.linalg.norm(gen_grads['params']['decoder']['ConvOut']['kernel'])
+    last_layer_nll = jp.linalg.norm(nll_grads['decoder']['ConvOut']['kernel'])
+    last_layer_gen = jp.linalg.norm(gen_grads['decoder']['ConvOut']['kernel'])
 
     disc_weight_factor = jp.where(disc_state.step > config.disc_gan_start, config.adversarial_weight, 0.0)
     disc_weight = last_layer_nll / (last_layer_gen + 1e-4) * disc_weight_factor
@@ -154,6 +166,7 @@ def train_step(vqgan_state: TrainState,
     vqgan_state = vqgan_state.apply_gradients(nll_grads)
     vqgan_state = vqgan_state.apply_gradients(gen_grads)
     disc_state = disc_state.apply_gradients(disc_grads)
+    disc_state = disc_state.replace(extra_variables=updates)
 
     info = {'nll_loss': nll_loss, 'gen_loss': gen_loss, 'disc_loss': disc_loss,
             'vq_result': vq_result, 'disc_result': disc_result, 'x_recon': x_recon}
@@ -166,7 +179,7 @@ def main(rng,
          percept_loss_weight=1.0,
          recon_loss_weight=1.0, ):
     img_size = 256
-    batch_size = 2
+    batch_size = 1
     num_workers = 8
 
     enc_config = AutoencoderConfig(out_channels=256)

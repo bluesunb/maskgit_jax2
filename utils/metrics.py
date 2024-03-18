@@ -46,11 +46,17 @@ class LPIPS(nn.Module):
         inputs = self.vgg((inputs + 1) / 2)
         target = self.vgg((target + 1) / 2)
 
-        feats_input = feats_tgt = diffs= {}
+        # feats_input = {}
+        # feats_tgt = {}
+        diffs = []
+
         for i, feat_name in enumerate(self.feature_names):
-            feats_input[i] = normalize(inputs[feat_name])
-            feats_tgt[i] = normalize(target[feat_name])
-            diffs[i] = (feats_input[i] - feats_tgt[i]) ** 2
+            # feats_input[i] = normalize(inputs[feat_name])
+            # feats_tgt[i] = normalize(target[feat_name])
+            # diffs[i] = (feats_input[i] - feats_tgt[i]) ** 2
+            feat_input = normalize(inputs[feat_name])
+            feat_tgt = normalize(target[feat_name])
+            diffs.append((feat_input - feat_tgt) ** 2)
 
         res = [spatial_average(self.lins[i](diffs[i]), keepdims=True) for i in range(len(self.feature_names))]
 
@@ -71,10 +77,13 @@ if __name__ == "__main__":
     import jax
     import jax.numpy as jp
 
-    model = LPIPS()
-    inputs = jp.ones((1, 224, 224, 3))
-    target = jp.ones((1, 224, 224, 3))
+    rng = jax.random.PRNGKey(99)
+    rng_a, rng_b = jax.random.split(rng)
 
-    rng, drop_rng = jax.random.split(jax.random.PRNGKey(99))
+    model = LPIPS()
+    inputs = jax.random.normal(rng_a, (1, 224, 224, 3))
+    target = jax.random.normal(rng_b, (1, 224, 224, 3))
+
+    rng, drop_rng = jax.random.split(rng)
     params = model.init({'params': rng, 'dropout': drop_rng}, inputs, target)
     print(model.apply(params, inputs, target, rngs={'dropout': drop_rng}))
