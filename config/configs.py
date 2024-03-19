@@ -37,25 +37,27 @@ class TransformerConfig:
 
 @dataclass
 class AutoencoderConfig:
-    channels: int = 128
+    channels: int = 64
     out_channels: int = 3
     # channel_multipliers: Tuple[int, ...] = (1, 1, 2, 2, 4)
     # channel_multipliers: Tuple[int, ...] = (1, 1, 2, 2, 2)
-    channel_multipliers: Tuple[int, ...] = (1,1,2,2,4,4)
-    attn_resolutions: Tuple[int, ...] = (16, )
+    channel_multipliers: Tuple[int, ...] = (1,1,2,2,4,)
+    attn_resolutions: Tuple[int, ...] = (24, )
     n_blocks: int = 2
-    dropout_rate: float = 0.0
+    dropout_rate: float = 0.1
     resample_with_conv: bool = True
 
 
 @dataclass
 class LossWeights:
-    log_gaussian_loss: float = 1.0
-    log_laplace_loss: float = 0.0
-    percept_loss: float = 0.1
-    recon_loss: float = 1.0
+    log_gaussian_weight: float = 1.0
+    log_laplace_weight: float = 0.0
+    percept_weight: float = 0.1
+    adversarial_weight: float = 0.1
+    # recon_loss: float = 1.0
     codebook_loss: float = 1.0
-    disc_factor: int = 1
-    disc_start: int = 10000
-    disc_gan_start: int = 10000
-    adversarial_weight: float = 1.0
+    # disc_factor: int = 1
+
+    disc_g_start: int = 10000
+    disc_d_start: int = 10000
+    disc_d_flip: int = 20000
