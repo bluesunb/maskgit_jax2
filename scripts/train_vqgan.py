@@ -1,28 +1,33 @@
-import os
+import os, shutil
 import numpy as np
-import jax
-import jax.numpy as jp
-import flax
-import flax.linen as nn
-import optax
+import jax, jax.numpy as jp
+import flax, optax
 from flax.training import checkpoints
 from flax.training.common_utils import shard, shard_prng_key
 from tqdm import tqdm
 
+import wandb
 import torchvision.transforms as T
 
 from models.vqgan import VQGAN, Discriminator
 from utils.metrics import LPIPS
-from utils.dataset import load_folder_data
+from utils.dataset import load_folder_data, load_stl
 from config import VQConfig, AutoencoderConfig, LossWeights
 from scripts.common import TrainState
 
+from datetime import datetime
 from functools import partial
 from typing import Sequence, Union, Dict, Callable
 
+from utils.viz import array_to_img, plot_to_img
 
-def make_rngs(rng: jp.ndarray, 
-              names: Union[Sequence[str], Dict[str, Sequence[int]]] = None, 
+
+def get_now_str():
+    return datetime.now().strftime("%m%d-%H%M")
+
+
+def make_rngs(rng: jp.ndarray,
+              names: Union[Sequence[str], Dict[str, Sequence[int]]] = None,
               contain_params: bool = False):
 
     if names is None:
@@ -48,6 +53,15 @@ def make_state(rngs, model, tx, init_batch_shape):
                               tx=tx,
                               extra_variables=variables)
 
+    return state
+
+
+def save_state(state: TrainState, path: str, step: int):
+    if os.path.exists(path):
+        shutil.rmtree(path)
+    state = flax.jax_utils.unreplicate(state)
+    state = jax.device_get(state)
+    state = checkpoints.save_checkpoint(path, state, step)
     return state
 
 
@@ -84,37 +98,36 @@ def train_step(vqgan_state: TrainState,
 
     def loss_fn_nll(params):
         rngs = make_rngs(rng, rng_names['vqgan'])
-        x_recon, q_loss, result = vqgan_state(batch, train=True, rngs=rngs, params=params)
-
-        log_laplace_loss = jp.mean(jp.abs(x_recon - batch))
+        x_recon, q_loss, result = vqgan_state(batch, train=True, params=params, rngs=rngs)
+        log_laplace_loss = jp.abs(x_recon - batch).mean()
         log_gaussian_loss = optax.l2_loss(x_recon, batch).mean()
-        percept_loss = lpips(batch, x_recon).mean()     # it is zero...
+        percept_loss = lpips(batch, x_recon).mean()
 
-        nll_loss = log_laplace_loss * config.log_laplace_loss + \
-                    log_gaussian_loss * config.log_gaussian_loss + \
-                    percept_loss * config.percept_loss
+        nll_loss = log_laplace_loss * config.log_laplace_weight + \
+                   log_gaussian_loss * config.log_gaussian_weight + \
+                   percept_loss * config.percept_weight
 
         loss = nll_loss + q_loss * config.codebook_loss
-        return loss, (x_recon, result)
+        return loss, result
 
-    def loss_fn_generate(params):
-        gen_rngs = make_rngs(rng, rng_names['vqgan'])
-        disc_rngs = make_rngs(rng, rng_names['disc'])
-        x_recon, q_loss, result = vqgan_state(batch, train=True, rngs=gen_rngs, params=params)
-        gen_loss = disc_state(x_recon, train=False, rngs=disc_rngs)
-        gen_loss = vanilla_d_loss(gen_loss)
-        return gen_loss
+    def loss_fn_gen(params):
+        rngs_vq = make_rngs(rng, rng_names['vqgan'])
+        rngs_disc = make_rngs(rng, rng_names['disc'])
+        x_recon, q_loss, result = vqgan_state(batch, train=True, params=params, rngs=rngs_vq)
+        logits_fake = disc_state(x_recon, train=False, rngs=rngs_disc)
+        g_loss = vanilla_d_loss(logits_fake)
+        return g_loss
 
-    def loss_fn_discriminate(params):
-        g_rngs = make_rngs(rng, rng_names['vqgan'])
-        d_rngs = make_rngs(rng, rng_names['disc'])
+    def loss_fn_disc(params):
+        rngs_vq = make_rngs(rng, rng_names['vqgan'])
+        rngs_disc = make_rngs(rng, rng_names['disc'])
 
-        x_recon, q_loss, result = vqgan_state(batch, train=False, rngs=g_rngs)
+        x_recon, q_loss, result = vqgan_state(batch, train=False, rngs=rngs_vq)
         x_recon = jax.lax.stop_gradient(x_recon)
 
-        disc_real, updates = disc_state(batch, train=True, rngs=d_rngs,
+        disc_real, updates = disc_state(batch, train=True, rngs=rngs_disc,
                                         params=params, mutable=['batch_stats'])
-        disc_fake, updates = disc_state(x_recon, train=True, rngs=d_rngs,
+        disc_fake, updates = disc_state(x_recon, train=True, rngs=rngs_disc,
                                         params=params, extra_variables=updates, mutable=['batch_stats'])
 
         def positive_branch(args):
@@ -136,9 +149,9 @@ def train_step(vqgan_state: TrainState,
     out, nll_grads = jax.value_and_grad(loss_fn_nll, has_aux=True)(vqgan_state.params)
     nll_loss, (x_recon, vq_result) = out
 
-    gen_loss, gen_grads = jax.value_and_grad(loss_fn_generate)(vqgan_state.params)
+    gen_loss, gen_grads = jax.value_and_grad(loss_fn_gen)(vqgan_state.params)
 
-    out, disc_grads = jax.value_and_grad(loss_fn_discriminate, has_aux=True)(disc_state.params)
+    out, disc_grads = jax.value_and_grad(loss_fn_disc, has_aux=True)(disc_state.params)
     disc_loss, (updates, disc_result) = out
 
     if pmap_axis is not None:
