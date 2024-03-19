@@ -37,14 +37,14 @@ class TransformerConfig:
 
 @dataclass
 class AutoencoderConfig:
-    channels: int = 128
+    channels: int = 64
     out_channels: int = 3
     # channel_multipliers: Tuple[int, ...] = (1, 1, 2, 2, 4)
     # channel_multipliers: Tuple[int, ...] = (1, 1, 2, 2, 2)
-    channel_multipliers: Tuple[int, ...] = (1,1,2,2,4,4)
-    attn_resolutions: Tuple[int, ...] = (16, )
+    channel_multipliers: Tuple[int, ...] = (1,1,2,2,4,)
+    attn_resolutions: Tuple[int, ...] = (24, )
     n_blocks: int = 2
-    dropout_rate: float = 0.0
+    dropout_rate: float = 0.1
     resample_with_conv: bool = True
 
 

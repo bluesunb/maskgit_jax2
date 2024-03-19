@@ -232,13 +232,18 @@ def main(rng,
                             tx=optax.chain(optax.zero_nans(), optax.adam(2.25e-5)),
                             init_batch_shape=(1, img_size, img_size, 3))
 
-    lpips = LPIPS()
-    lpips = lpips.bind(
-        lpips.init(rng, jp.ones((1, img_size, img_size, 3)), jp.ones((1, img_size, img_size, 3)))
+    lpips1 = LPIPS()
+    lpips1 = lpips1.bind(
+        lpips1.init(rng, jp.ones((1, img_size, img_size, 3)), jp.ones((1, img_size, img_size, 3)))
     )
 
-    parallel_train_step = jax.pmap(partial(train_step, lpips=lpips, config=loss_config, pmap_axis='batch'), axis_name='batch')
-    parallel_recon_step = jax.pmap(partial(reconstruct_image, lpips=lpips))
+    lpips2 = LPIPS()
+    lpips2 = lpips2.bind(
+        lpips2.init(rng, jp.ones((1, img_size, img_size, 3)), jp.ones((1, img_size, img_size, 3)))
+    )
+
+    parallel_train_step = jax.pmap(partial(train_step, lpips=lpips1, config=loss_config, pmap_axis='batch'), axis_name='batch')
+    parallel_recon_step = jax.pmap(partial(reconstruct_image, lpips=lpips2))
 
     vqgan_state = flax.jax_utils.replicate(vqgan_state)
     disc_state = flax.jax_utils.replicate(disc_state)
@@ -246,6 +251,7 @@ def main(rng,
 
     wandb.init(project='maskgit', dir=os.path.abspath('./wandb'), name=f'maskgit_{get_now_str()}')
     run = wandb.run
+    ckpt_path = os.path.abspath('./checkpoints/')
 
     for epoch in range(n_epochs):
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{n_epochs}")
@@ -262,7 +268,6 @@ def main(rng,
 
             if step % 1000 == 0 and step > 0:
                 # Save model
-                ckpt_path = os.path.abspath('./checkpoints/')
                 save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_{epoch}_{step}.ckpt'), vqgan_state.step[0])
                 save_state(disc_state, os.path.join(ckpt_path, f'disc_{epoch}_{step}.ckpt'), disc_state.step[0])
                 print(f'Model saved ({epoch}, {step})')
@@ -293,10 +298,10 @@ if __name__ == "__main__":
 
     # with fake_pmap_and_jit():
     #     main(rng, img_size=96, batch_size=2, num_workers=8, n_epochs=1, loss_config=loss_config)
-    main(rng, img_size=96, batch_size=2, num_workers=8, n_epochs=1, loss_config=loss_config)
+    # main(rng, img_size=96, batch_size=2, num_workers=8, n_epochs=1, loss_config=loss_config)
 
-    # with Profile() as pr:
-    # main(rng, batch_size=64, num_workers=8, n_epochs=1, loss_config=loss_config)
+    with Profile() as pr:
+        main(rng, img_size=96, batch_size=72, num_workers=8, n_epochs=1, loss_config=loss_config)
 
     stats = Stats(pr, stream=open('profile_stats.txt', 'w'))
     stats.strip_dirs()
