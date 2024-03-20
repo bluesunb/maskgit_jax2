@@ -1,3 +1,4 @@
+import math
 import jax
 import jax.numpy as jp
 import flax
@@ -6,6 +7,7 @@ from functools import partial
 
     
 InstanceNorm = partial(nn.BatchNorm, momentum=0.9, epsilon=1e-5, axis=(0, 1,))
+
 
 def instance_norm(x, epsilon=1e-5):
     mean = jp.mean(x, axis=(2, 3), keepdims=True)
@@ -55,11 +57,11 @@ class Discriminator(nn.Module):
         x = nn.Conv(self.emb_channels, (1, 1), padding='SAME')(x)
         x = nn.leaky_relu(x, negative_slope=0.2)
         
-        n_layers = min(jp.log2(x.shape[1]).astype(int), self.n_layers)
+        n_layers = min(int(math.log2(x.shape[-1])), self.n_layers)
 
-        for i in range(self.n_layers):
-            c = self.emb_channels * min(2 ** i, 8)
-            s = 2 if i < self.n_layers else 1
+        for i in range(n_layers):
+            # c = self.emb_channels * min(2 ** i, 8)
+            # s = 2 if i < self.n_layers else 1
             # x = nn.Conv(c, (4, 4), (s, s), padding=1, use_bias=False)(x)
             x = DiscriminatorBlock(self.emb_channels, idx=i)(x)
             # x = nn.BatchNorm(momentum=0.9, epsilon=1e-5, axis=(0, -1))(x, use_running_average=False)
