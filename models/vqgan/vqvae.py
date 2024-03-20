@@ -55,18 +55,26 @@ class VQGAN(nn.Module):
         self.post_conv = nn.Conv(self.emb_dim, kernel_size=(1, 1))
 
     def encode(self, x: jp.ndarray, train: bool = True):
-        x_enc = self.encoder(x)
+        x_enc = self.encoder(x, train)
         x_enc = self.conv(x_enc)
-        quantized, result = self.vq(x_enc, train)
-        loss = result.pop('loss', 0.0)
-        return quantized, loss, result
+        # quantized, result = self.vq(x_enc, train)
+        # vq_loss = result.pop('vq_loss', 0.0)
+        # return quantized, vq_loss, result
+        return x_enc
 
     def decode(self, x: jp.ndarray, train: bool = True):
         x = self.post_conv(x)
         return self.decoder(x, train)
+    
+    def quantize(self, x: jp.ndarray, train: bool = True):
+        quantied, result = self.vq(x, train)
+        vq_loss = result.pop('vq_loss', 0.0)
+        return quantied, vq_loss, result
 
     def __call__(self, x: jp.ndarray, train: bool = True):
-        quantized, loss, result = self.encode(x, train)
+        # quantized, loss, result = self.encode(x, train)
+        x_enc = self.encode(x, train)
+        quantized, loss, result = self.quantize(x_enc, train)
         x_rec = self.decode(quantized, train)
         return x_rec, loss, result
 
@@ -76,31 +84,34 @@ if __name__ == "__main__":
     import optax
     from pprint import pp
 
-    ae_config = AutoencoderConfig(channels=32,
-                                  out_channels=3,
-                                  channel_multipliers=(1, 1, 2, 2, 4, 4),
-                                  attn_resolutions=(16, 32),
-                                  n_blocks=2,
-                                  resample_with_conv=True)
+    enc_config = AutoencoderConfig(channels=64,
+                                   out_channels=128,
+                                   channel_multipliers=[1, 1, 2, 2, 4,],
+                                   attn_resolutions=[24],
+                                   n_blocks=2,
+                                   dropout_rate=0.1,
+                                   resample_with_conv=True)
+    
+    dec_config = AutoencoderConfig(channels=64,
+                                   out_channels=3,
+                                   channel_multipliers=[1, 1, 2, 2, 4],
+                                   attn_resolutions=[24],
+                                   n_blocks=2,
+                                   dropout_rate=0.1,
+                                   resample_with_conv=True)
 
-    enc_config = AutoencoderConfig(**ae_config.__dict__)
-    enc_config.out_channels = 32
-    dec_config = AutoencoderConfig(**ae_config.__dict__)
-
-    vq_config = VQConfig(codebook_size=360,
-                         commit_loss_weight=0.25,
-                         entropy_loss_weight=0.1,
-                         entropy_temperature=0.01)
-
+    vq_config = VQConfig(codebook_size=256,
+                         commit_loss_weight=1.0,
+                         entropy_loss_weight=0.25,
+                         entropy_temperature=0.5)
+    
     model = VQGAN(enc_config, dec_config, vq_config)
-
-    model.init_from
 
     rng = jax.random.PRNGKey(0)
     x = jp.ones((1, 256, 256, 3))
-    params = model.init(rng, x)
+    params = model.init({'params': rng, 'dropout': rng}, x)
     def loss_fn(params, x):
-        x_rec, loss, result = model.apply(params, x)
+        x_rec, loss, result = model.apply(params, x, train=True, rngs={'dropout': rng})
         return optax.l2_loss(x, x_rec).mean() + loss
 
     grad_fn = jax.grad(loss_fn)

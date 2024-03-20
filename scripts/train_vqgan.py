@@ -73,7 +73,8 @@ def vanilla_d_loss(logits_fake, logits_real = None):
         loss_fake = jp.mean(jax.nn.softplus(logits_fake))
         loss_real = jp.mean(jax.nn.softplus(-logits_real))
 
-    return (loss_fake + loss_real) * 0.5
+    # return (loss_fake + loss_real) * 0.5
+    return loss_fake, loss_real
 
 
 def hinge_d_loss(logits_fake, logits_real = None):
@@ -101,22 +102,24 @@ def train_step(vqgan_state: TrainState,
         x_recon, q_loss, result = vqgan_state(batch, train=True, params=params, rngs=rngs)
         log_laplace_loss = jp.abs(x_recon - batch).mean()
         log_gaussian_loss = optax.l2_loss(x_recon, batch).mean()
-        percept_loss = lpips(batch, x_recon).mean()
+        # percept_loss = lpips(batch, x_recon).mean()
+        percept_loss = 0
+        nll_loss = (log_laplace_loss * config.log_laplace_weight
+                    + log_gaussian_loss * config.log_gaussian_weight
+                    + percept_loss * config.percept_weight)
 
-        nll_loss = log_laplace_loss * config.log_laplace_weight + \
-                   log_gaussian_loss * config.log_gaussian_weight + \
-                   percept_loss * config.percept_weight
-
-        loss = nll_loss + q_loss * config.codebook_loss
-        return loss, result
+        nll_loss = nll_loss + q_loss * config.codebook_loss
+        result.update({'percept_loss': percept_loss, 'q_loss': q_loss})
+        return nll_loss, result
 
     def loss_fn_gen(params):
         rngs_vq = make_rngs(rng, rng_names['vqgan'])
         rngs_disc = make_rngs(rng, rng_names['disc'])
         x_recon, q_loss, result = vqgan_state(batch, train=True, params=params, rngs=rngs_vq)
         logits_fake = disc_state(x_recon, train=False, rngs=rngs_disc)
-        g_loss = vanilla_d_loss(logits_fake)
-        return g_loss
+        # g_loss, _ = vanilla_d_loss(logits_fake)
+        g_loss = jp.mean(jax.nn.softplus(logits_fake))
+        return g_loss * 0.5
 
     def loss_fn_disc(params):
         rngs_vq = make_rngs(rng, rng_names['vqgan'])
@@ -125,85 +128,118 @@ def train_step(vqgan_state: TrainState,
         x_recon, q_loss, result = vqgan_state(batch, train=False, rngs=rngs_vq)
         x_recon = jax.lax.stop_gradient(x_recon)
 
-        disc_real, updates = disc_state(batch, train=True, rngs=rngs_disc,
-                                        params=params, mutable=['batch_stats'])
-        disc_fake, updates = disc_state(x_recon, train=True, rngs=rngs_disc,
-                                        params=params, extra_variables=updates, mutable=['batch_stats'])
+        logits_fake, updates = disc_state(x_recon, train=True, rngs=rngs_disc,
+                                          params=params, mutable=['batch_stats'])
+        logits_real, updates = disc_state(batch, train=True, rngs=rngs_disc,
+                                          params=params, extra_variables=updates, mutable=['batch_stats'])
 
-        def positive_branch(args):
-            disc_real, disc_fake = args
-            return vanilla_d_loss(disc_real, disc_fake)
+        # loss_fake = jp.mean(jax.nn.relu(1.0 + logits_fake))
+        # loss_real = jp.mean(jax.nn.relu(1.0 - logits_real))
+        # # disc_loss = hinge_d_loss(logits_fake, logits_real)
+        # disc_loss = 0.5 * (loss_fake + loss_real)
 
-        def negative_branch(args):
-            disc_real, disc_fake = args
-            return vanilla_d_loss(disc_fake, disc_real)
+        def positive_branch(arg):
+            logits_real, logits_fake = arg
+            loss_real, loss_fake = vanilla_d_loss(logits_real, logits_fake)
+            return loss_real, loss_fake
 
-        disc_factor = jp.logical_and(disc_state.step < config.disc_factor,
-                                     jp.array_equal(jp.mod(disc_state.step, 3), 0))
+        def negative_branch(arg):
+            logits_real, logits_fake = arg
+            loss_fake, loss_real = vanilla_d_loss(logits_fake, logits_real)
+            return loss_real, loss_fake
 
-        disc_loss = jax.lax.cond(disc_factor, positive_branch, negative_branch, (disc_real, disc_fake))
-        disc_weight = jp.where(disc_state.step > config.disc_start, 1.0, 0.0)
-        disc_loss = jp.mean(disc_loss * disc_weight)
-        return disc_loss, (updates, {'real': disc_real, 'fake': disc_fake})
+        # flip_update = jp.logical_and(disc_state.step < config.disc_d_flip, jp.mod(disc_state.step, 3) == 0)
+        disc_weight = jp.asarray(disc_state.step > config.disc_d_start, dtype=jp.float32)
+        loss_real = jp.mean(jax.nn.softplus(1 - logits_real))
+        loss_fake = jp.mean(jax.nn.softplus(1 + logits_fake))
+        # loss_real, loss_fake = jax.lax.cond(flip_update, positive_branch, negative_branch, (logits_real, logits_fake))
+        disc_loss = (loss_real + loss_fake) * 0.5 * disc_weight
+        return disc_loss, (updates, {'loss_real': loss_real, 'loss_fake': loss_fake})
 
-    out, nll_grads = jax.value_and_grad(loss_fn_nll, has_aux=True)(vqgan_state.params)
-    nll_loss, (x_recon, vq_result) = out
+    (nll_loss, result), nll_grads = jax.value_and_grad(loss_fn_nll, has_aux=True)(vqgan_state.params)
+    g_loss, g_grads = jax.value_and_grad(loss_fn_gen)(vqgan_state.params)
+    (d_loss, (updates, d_result)), d_grads = jax.value_and_grad(loss_fn_disc, has_aux=True)(disc_state.params)
 
-    gen_loss, gen_grads = jax.value_and_grad(loss_fn_gen)(vqgan_state.params)
+    result.update(d_result)
 
-    out, disc_grads = jax.value_and_grad(loss_fn_disc, has_aux=True)(disc_state.params)
-    disc_loss, (updates, disc_result) = out
+    last_layer_nll = jp.linalg.norm(nll_grads['decoder']['ConvOut']['kernel'])
+    last_layer_gen = jp.linalg.norm(g_grads['decoder']['ConvOut']['kernel'])
+
+    disc_weight_factor = jp.where(vqgan_state.step < config.disc_g_start, config.adversarial_weight, 0.0)
+    disc_weight = last_layer_nll / (last_layer_gen + 1e-4) * disc_weight_factor
+    disc_weight = jp.clip(disc_weight, 0, 1e4)
+
+    g_grads = jax.tree_map(lambda x: x * disc_weight, g_grads)
 
     if pmap_axis is not None:
         nll_grads = jax.lax.pmean(nll_grads, axis_name=pmap_axis)
-        gen_grads = jax.lax.pmean(gen_grads, axis_name=pmap_axis)
-        disc_grads = jax.lax.pmean(disc_grads, axis_name=pmap_axis)
+        g_grads = jax.lax.pmean(g_grads, axis_name=pmap_axis)
+        d_grads = jax.lax.pmean(d_grads, axis_name=pmap_axis)
 
         nll_loss = jax.lax.pmean(nll_loss, axis_name=pmap_axis)
-        gen_loss = jax.lax.pmean(gen_loss, axis_name=pmap_axis)
-        disc_loss = jax.lax.pmean(disc_loss, axis_name=pmap_axis)
+        g_loss = jax.lax.pmean(g_loss, axis_name=pmap_axis)
+        d_loss = jax.lax.pmean(d_loss, axis_name=pmap_axis)
 
-        vq_result = jax.lax.pmean(vq_result, axis_name=pmap_axis)
-        disc_result = jax.lax.pmean(disc_result, axis_name=pmap_axis)
-
-        x_recon = x_recon[0]
-
-    last_layer_nll = jp.linalg.norm(nll_grads['decoder']['ConvOut']['kernel'])
-    last_layer_gen = jp.linalg.norm(gen_grads['decoder']['ConvOut']['kernel'])
-
-    disc_weight_factor = jp.where(disc_state.step > config.disc_gan_start, config.adversarial_weight, 0.0)
-    disc_weight = last_layer_nll / (last_layer_gen + 1e-4) * disc_weight_factor
-
-    gen_grads = jax.tree_map(lambda x: x * disc_weight, gen_grads)
+        result = jax.lax.pmean(result, axis_name=pmap_axis)
 
     vqgan_state = vqgan_state.apply_gradients(nll_grads)
-    vqgan_state = vqgan_state.apply_gradients(gen_grads)
-    disc_state = disc_state.apply_gradients(disc_grads)
+    vqgan_state = vqgan_state.apply_gradients(g_grads)
+    disc_state = disc_state.apply_gradients(d_grads)
     disc_state = disc_state.replace(extra_variables=updates)
 
-    info = {'nll_loss': nll_loss, 'gen_loss': gen_loss, 'disc_loss': disc_loss,
-            'vq_result': vq_result, 'disc_result': disc_result, 'x_recon': x_recon}
+    result.update({'nll_loss': nll_loss, 'g_loss': g_loss, 'd_loss': d_loss, 'disc_weight': disc_weight})
 
-    return (vqgan_state, disc_state), info
+    return (vqgan_state, disc_state), result
+
+
+def reconstruct_image(vqgan_state, disc_state, batch, rng, lpips):
+    rng_names = {'vqgan': ('dropout', ), 'disc': ()}
+    x_recon, q_loss, result = vqgan_state(batch, train=False, rngs=make_rngs(rng, rng_names['vqgan']))
+    # percept_loss = lpips(x_recon, batch).mean()
+    percept_loss = 0
+    recon_loss = optax.l2_loss(x_recon, batch).mean()
+
+    logits_fake = disc_state(x_recon, train=False, rngs=make_rngs(rng, rng_names['disc']))
+    loss_fake = jp.mean(jax.nn.relu(1.0 + logits_fake))
+
+    return x_recon, {'recon_loss': recon_loss, 'percept_loss': percept_loss, 'loss_fake': loss_fake}
+
 
 def main(rng,
-         disc_factor=1.0,
-         disc_start=10000,
-         percept_loss_weight=1.0,
-         recon_loss_weight=1.0, ):
-    img_size = 256
-    batch_size = 1
-    num_workers = 8
+         img_size: int = 256,
+         batch_size: int = 8,
+         num_workers: int = 8,
+         n_epochs: int = 50,
+         loss_config: LossWeights = LossWeights()):
+
+    # Load dataset
+    train_transform = T.Compose([T.Resize(img_size),
+                                 T.RandomCrop((img_size, img_size)),
+                                 T.RandomHorizontalFlip(),
+                                 T.ToTensor()])
+
+    test_transform = T.Compose([T.Resize(img_size),
+                                T.CenterCrop((img_size, img_size)),
+                                T.ToTensor()])
+
+    # train_loader = load_folder_data(os.path.expanduser("~/PycharmProjects/Datasets/ILSVRC2012_img_test/test"),
+    #                                 batch_size=batch_size, shuffle=True, num_workers=num_workers, transform=train_transform)
+    # test_loader = load_folder_data(os.path.expanduser("~/PycharmProjects/Datasets/ILSVRC2012_img_test/test"),
+    #                                batch_size=batch_size, shuffle=False, num_workers=num_workers, transform=test_transform)
+
+    train_loader = load_stl(os.path.expanduser('~/PycharmProjects/Datasets'), 'train+unlabeled',
+                            batch_size=batch_size, shuffle=True, num_workers=num_workers)
+
+    test_loader = load_stl(os.path.expanduser('~/PycharmProjects/Datasets'), 'test',
+                           batch_size=batch_size, shuffle=False, num_workers=num_workers)
+
+    sample_batch = next(iter(test_loader))
+    sample_batch = shard(sample_batch[0][0:4])
 
     enc_config = AutoencoderConfig(out_channels=256)
     dec_config = AutoencoderConfig(out_channels=3)
     vq_config = VQConfig(codebook_size=1024)
 
-    # rng_names = {'vqgan': ('dropout', ),
-    #              'disc': ()}
-    rng_names = ('dropout',)
-
-    # Prepare model
     gan = VQGAN(enc_config, dec_config, vq_config)
     discriminator = Discriminator(emb_channels=64, n_layers=3)
     # trainer_model = VQGANTrainer(gan, discriminator)
@@ -222,62 +258,90 @@ def main(rng,
                             tx=optax.chain(optax.zero_nans(), optax.adam(2.25e-5)),
                             init_batch_shape=(1, img_size, img_size, 3))
 
-    lpips = LPIPS()
-    lpips = lpips.bind(
-        lpips.init(rng, jp.ones((1, img_size, img_size, 3)), jp.ones((1, img_size, img_size, 3)))
+    lpips1 = LPIPS()
+    lpips1 = lpips1.bind(
+        lpips1.init(rng, jp.ones((1, img_size, img_size, 3)), jp.ones((1, img_size, img_size, 3)))
     )
 
-    # Load dataset
-    train_transform = T.Compose([T.Resize(img_size),
-                                 T.RandomCrop((img_size, img_size)),
-                                 T.RandomHorizontalFlip(),
-                                 T.ToTensor()])
+    lpips2 = LPIPS()
+    lpips2 = lpips2.bind(
+        lpips2.init(rng, jp.ones((1, img_size, img_size, 3)), jp.ones((1, img_size, img_size, 3)))
+    )
 
-    test_transform = T.Compose([T.Resize(img_size),
-                                T.CenterCrop((img_size, img_size)),
-                                T.ToTensor()])
-
-    train_loader = load_folder_data(os.path.expanduser("~/PycharmProjects/Datasets/ILSVRC2012_img_test/test"),
-                                    batch_size=batch_size, shuffle=True, num_workers=num_workers, transform=train_transform)
-    test_loader = load_folder_data(os.path.expanduser("~/PycharmProjects/Datasets/ILSVRC2012_img_test/test"),
-                                   batch_size=batch_size, shuffle=False, num_workers=num_workers, transform=test_transform)
-
-    n_epochs = 50
-    n_steps = len(train_loader)
-
-    loss_config = LossWeights()
-    parallel_train_step = jax.pmap(partial(train_step, lpips=lpips, config=loss_config, pmap_axis='batch'), axis_name='batch')
+    parallel_train_step = jax.pmap(partial(train_step, lpips=lpips1, config=loss_config, pmap_axis='batch'), axis_name='batch')
+    parallel_recon_step = jax.pmap(partial(reconstruct_image, lpips=lpips2))
 
     vqgan_state = flax.jax_utils.replicate(vqgan_state)
     disc_state = flax.jax_utils.replicate(disc_state)
     unreplicate_dict = lambda x: jax.tree_map(lambda y: jax.device_get(y[0]), x)
 
+    wandb.init(project='maskgit', dir=os.path.abspath('./wandb'), name=f'maskgit_{get_now_str()}')
+    run = wandb.run
+    ckpt_path = os.path.abspath('./checkpoints/')
+
     for epoch in range(n_epochs):
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{n_epochs}")
         for step, batch in enumerate(pbar):
-            batch = shard(batch)
+            batch = shard(batch[0])
             rng, device_rngs = jax.random.split(rng)
             device_rngs = shard_prng_key(device_rngs)
             (vqgan_state, disc_state), info = parallel_train_step(vqgan_state, disc_state, batch, device_rngs)
 
-            if step % 1000 == 0:
-                # Save model
-                pass
+            info = unreplicate_dict(info)
+            pbar.set_postfix({'vq_loss': info['nll_loss'] + info['g_loss'],
+                              'disc_loss': info['d_loss'],
+                              'disc_weight': info['disc_weight']})
 
-            if step % 100 == 0:
+            global_step = epoch * len(train_loader) + step
+            run.log({k: v.item() for k, v in info.items() if v.ndim == 0},
+                    step=epoch * len(train_loader) + step)
+
+            if global_step % 1500 == 0 and step > 0:
+                # Save model
+                save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_{epoch}_{step}.ckpt'), vqgan_state.step[0])
+                save_state(disc_state, os.path.join(ckpt_path, f'disc_{epoch}_{step}.ckpt'), disc_state.step[0])
+                print(f'Model saved ({epoch}, {step})')
+
+            if global_step % 250 == 0:
                 # Save image
-                pass
+                x_recon, recon_info = parallel_recon_step(vqgan_state, disc_state, sample_batch, device_rngs)
+                x_recon = jax.device_get(x_recon[0]).squeeze()
+                original = jax.device_get(sample_batch[0][0]).squeeze()
+                recon_info = unreplicate_dict(recon_info)
+                run.log({'reconstructions': wandb.Image(np.concatenate([original, x_recon], axis=1)),
+                         **recon_info},
+                        step=global_step)
+
+    save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_{epoch}_{step}.ckpt'), vqgan_state.step[0])
+    save_state(disc_state, os.path.join(ckpt_path, f'disc_{epoch}_{step}.ckpt'), disc_state.step[0])
+    print(f'Model saved ({epoch}, {step})')
+    run.finish()
 
 
 if __name__ == "__main__":
     from chex import fake_pmap_and_jit
+    from cProfile import Profile
+    from pstats import Stats
 
     rng = jax.random.PRNGKey(0)
     disc_factor = 1.0
     disc_start = 10000
     percept_loss_weight = 1.0
     recon_loss_weight = 1.0
+    loss_config = LossWeights(disc_d_start=3000,
+                              disc_g_start=3000,
+                              disc_d_flip=6000)
 
-    with fake_pmap_and_jit():
-        main(rng, disc_factor, disc_start, percept_loss_weight, recon_loss_weight)
-    # main(rng, disc_factor, disc_start, percept_loss_weight, recon_loss_weight)
+    # with fake_pmap_and_jit():
+    #     main(rng, img_size=96, batch_size=2, num_workers=8, n_epochs=1, loss_config=loss_config)
+    # main(rng, img_size=96, batch_size=2, num_workers=8, n_epochs=1, loss_config=loss_config)
+
+    with Profile() as pr:
+        main(rng, img_size=96, batch_size=128, num_workers=8, n_epochs=50, loss_config=loss_config)
+
+    stats = Stats(pr, stream=open('profile_stats.txt', 'w'))
+    stats.strip_dirs()
+    stats.sort_stats('cumulative')
+    stats.print_stats()
+    stats.dump_stats('profile_stats.pstat')
+    print('Done')

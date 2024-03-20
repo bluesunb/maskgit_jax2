@@ -33,7 +33,7 @@ def vq_embedding(ids: jp.ndarray, codebook: jp.ndarray) -> jp.ndarray:
     return jp.take(codebook, ids, axis=0)
 
 
-def calc_vq_loss(x: jp.ndarray, quantized: jp.ndarray) -> jp.ndarray:
+def calc_codebook_loss(x: jp.ndarray, quantized: jp.ndarray) -> jp.ndarray:
     return optax.l2_loss(jax.lax.stop_gradient(x), quantized).mean()
 
 
@@ -90,16 +90,16 @@ class VectorQuantizer(nn.Module):
 
         if train:
             commit_loss = calc_commit_loss(x, quantized) * self.config.commit_loss_weight
-            vq_loss = calc_vq_loss(x, quantized)
+            codebook_loss = calc_codebook_loss(x, quantized)
             entropy_loss = 0.0
 
             if self.config.entropy_loss_weight > 0:
                 entropy_loss = calc_entropy_loss(-distances, temperature=self.config.entropy_temperature)
                 entropy_loss = entropy_loss * self.config.entropy_loss_weight
             
-            loss = vq_loss + commit_loss + entropy_loss
+            loss = codebook_loss + commit_loss + entropy_loss
             quantized = x + jax.lax.stop_gradient(quantized - x)
-            result.update({'loss': loss, 'commit_loss': commit_loss, 'vq_loss': vq_loss, 'entropy_loss': entropy_loss})
+            result.update({'vq_loss': loss, 'commit_loss': commit_loss, 'codebook_loss': codebook_loss, 'entropy_loss': entropy_loss})
 
         result.update({"encodings": encodings, "indices": indices})
         return quantized, result
@@ -129,7 +129,7 @@ class GumbelVQ(nn.Module):
             encodings = jax.nn.one_hot(indices, n_tokens, dtype=self.dtype)
         
         quantized = vector_quantization(encodings, codebook)
-        reuslt.update({"loss": 0.0, "encodings": encodings, "indices": indices})
+        reuslt.update({"vq_loss": 0.0, "encodings": encodings, "indices": indices})
         return quantized, reuslt
     
     def get_codebook(self):

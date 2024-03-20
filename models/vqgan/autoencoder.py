@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jp
 import flax.linen as nn
 
-from .layers import ResBlock, Upsample, Downsample, DownsamplePool, Attention
+from models.vqgan.layers import ResBlock, Upsample, Downsample, DownsamplePool, Attention
 from config import AutoencoderConfig
 
 from typing import Sequence
@@ -117,3 +117,29 @@ class Decoder(nn.Module):
         hidden = nn.Conv(config.out_channels, (3, 3),
                          padding='SAME', use_bias=False, kernel_init=default_kernel, name='ConvOut')(hidden)
         return hidden
+
+
+if __name__ == "__main__":
+    rng = jax.random.PRNGKey(0)
+    x = jax.random.normal(rng, (1, 96, 96, 3))
+    config = AutoencoderConfig(channels=64,
+                               out_channels=128,
+                               channel_multipliers=[1, 1, 2, 2, 4,],
+                               attn_resolutions=[24],
+                               n_blocks=2,
+                               dropout_rate=0.1,
+                               resample_with_conv=True)
+    
+    encoder = Encoder(config)
+    out, param = encoder.init_with_output({'params': rng, 'dropout': rng}, x, True)
+
+    config = AutoencoderConfig(channels=64,
+                               out_channels=3,
+                               channel_multipliers=[1, 1, 2, 2, 4],
+                               attn_resolutions=[24],
+                               n_blocks=2,
+                               dropout_rate=0.1,
+                               resample_with_conv=True)
+    
+    decoder = Decoder(config)
+    out, param = decoder.init_with_output({'params': rng, 'dropout': rng}, out, True)
