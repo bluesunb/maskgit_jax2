@@ -62,6 +62,7 @@ def save_state(state: TrainState, path: str, step: int):
     state = flax.jax_utils.unreplicate(state)
     state = jax.device_get(state)
     state = checkpoints.save_checkpoint(path, state, step)
+    checkpoints.save_checkpoint(path, target=state, step=step, overwrite=True, keep=2)
     return state
 
 
@@ -298,22 +299,25 @@ def main(rng,
 
             if global_step % 1500 == 0 and step > 0:
                 # Save model
-                save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_{epoch}_{step}.ckpt'), vqgan_state.step[0])
-                save_state(disc_state, os.path.join(ckpt_path, f'disc_{epoch}_{step}.ckpt'), disc_state.step[0])
+                save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_last.ckpt'), vqgan_state.step[0])
+                save_state(disc_state, os.path.join(ckpt_path, f'disc_last.ckpt'), disc_state.step[0])
                 print(f'Model saved ({epoch}, {step})')
 
             if global_step % 250 == 0:
                 # Save image
                 x_recon, recon_info = parallel_recon_step(vqgan_state, disc_state, sample_batch, device_rngs)
-                x_recon = jax.device_get(x_recon[0]).squeeze()
-                original = jax.device_get(sample_batch[0][0]).squeeze()
+                x_recon = jax.device_get(x_recon).squeeze()
+                original = jax.device_get(sample_batch).squeeze()
                 recon_info = unreplicate_dict(recon_info)
-                run.log({'reconstructions': wandb.Image(np.concatenate([original, x_recon], axis=1)),
+
+                x_recon = np.concatenate(x_recon, 1)
+                original = np.concatenate(original, 1)
+                run.log({'reconstructions': wandb.Image(np.concatenate([original, x_recon], axis=0)),
                          **recon_info},
                         step=global_step)
 
-    save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_{epoch}_{step}.ckpt'), vqgan_state.step[0])
-    save_state(disc_state, os.path.join(ckpt_path, f'disc_{epoch}_{step}.ckpt'), disc_state.step[0])
+    save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_final.ckpt'), vqgan_state.step[0])
+    save_state(disc_state, os.path.join(ckpt_path, f'disc_final.ckpt'), disc_state.step[0])
     print(f'Model saved ({epoch}, {step})')
     run.finish()
 
