@@ -134,21 +134,6 @@ def train_step(vqgan_state: TrainState,
         logits_real, updates = disc_state(batch, train=True, rngs=rngs_disc,
                                           params=params, extra_variables=updates, mutable=['batch_stats'])  # expect to be low
 
-        # loss_fake = jp.mean(jax.nn.relu(1.0 + logits_fake))
-        # loss_real = jp.mean(jax.nn.relu(1.0 - logits_real))
-        # # disc_loss = hinge_d_loss(logits_fake, logits_real)
-        # disc_loss = 0.5 * (loss_fake + loss_real)
-
-        def positive_branch(arg):
-            logits_real, logits_fake = arg
-            loss_real, loss_fake = vanilla_d_loss(logits_real, logits_fake)
-            return loss_real, loss_fake
-
-        def negative_branch(arg):
-            logits_real, logits_fake = arg
-            loss_fake, loss_real = vanilla_d_loss(logits_fake, logits_real)
-            return loss_real, loss_fake
-
         # flip_update = jp.logical_and(disc_state.step < config.disc_d_flip, jp.mod(disc_state.step, 3) == 0)
         disc_weight = jp.asarray(disc_state.step > config.disc_d_start, dtype=jp.float32)
         loss_real = jp.mean(jax.nn.softplus(1 - logits_real))       # high real -> good for discriminator -> accurately classified
