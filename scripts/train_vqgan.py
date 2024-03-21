@@ -61,7 +61,6 @@ def save_state(state: TrainState, path: str, step: int):
         shutil.rmtree(path)
     state = flax.jax_utils.unreplicate(state)
     state = jax.device_get(state)
-    state = checkpoints.save_checkpoint(path, state, step)
     checkpoints.save_checkpoint(path, target=state, step=step, overwrite=True, keep=2)
     return state
 
@@ -134,21 +133,6 @@ def train_step(vqgan_state: TrainState,
         logits_real, updates = disc_state(batch, train=True, rngs=rngs_disc,
                                           params=params, extra_variables=updates, mutable=['batch_stats'])  # expect to be low
 
-        # loss_fake = jp.mean(jax.nn.relu(1.0 + logits_fake))
-        # loss_real = jp.mean(jax.nn.relu(1.0 - logits_real))
-        # # disc_loss = hinge_d_loss(logits_fake, logits_real)
-        # disc_loss = 0.5 * (loss_fake + loss_real)
-
-        def positive_branch(arg):
-            logits_real, logits_fake = arg
-            loss_real, loss_fake = vanilla_d_loss(logits_real, logits_fake)
-            return loss_real, loss_fake
-
-        def negative_branch(arg):
-            logits_real, logits_fake = arg
-            loss_fake, loss_real = vanilla_d_loss(logits_fake, logits_real)
-            return loss_real, loss_fake
-
         # flip_update = jp.logical_and(disc_state.step < config.disc_d_flip, jp.mod(disc_state.step, 3) == 0)
         disc_weight = jp.asarray(disc_state.step > config.disc_d_start, dtype=jp.float32)
         loss_real = jp.mean(jax.nn.softplus(1 - logits_real))       # high real -> good for discriminator -> accurately classified
@@ -168,7 +152,7 @@ def train_step(vqgan_state: TrainState,
 
     disc_weight_factor = jp.where(vqgan_state.step < config.disc_g_start, config.adversarial_weight, 0.0)
     disc_weight = last_layer_nll / (last_layer_gen + 1e-4) * disc_weight_factor
-    disc_weight = jp.clip(disc_weight, 0, 1e4)
+    disc_weight = jp.clip(disc_weight, 1e-4, 1e4)
 
     g_grads = jax.tree_map(lambda x: x * disc_weight, g_grads)
 
@@ -288,14 +272,16 @@ def main(rng,
             device_rngs = shard_prng_key(device_rngs)
             (vqgan_state, disc_state), info = parallel_train_step(vqgan_state, disc_state, batch, device_rngs)
 
-            info = unreplicate_dict(info)
-            pbar.set_postfix({'vq_loss': info['nll_loss'] + info['g_loss'],
-                              'disc_loss': info['d_loss'],
-                              'disc_weight': info['disc_weight']})
-
             global_step = epoch * len(train_loader) + step
-            run.log({k: v.item() for k, v in info.items() if v.ndim == 0},
-                    step=epoch * len(train_loader) + step)
+
+            if global_step % 10 == 0:
+                info = unreplicate_dict(info)
+                pbar.set_postfix({'vq_loss': info['nll_loss'] + info['g_loss'],
+                                  'disc_loss': info['d_loss'],
+                                  'disc_weight': info['disc_weight']})
+
+                run.log({k: v.item() for k, v in info.items() if v.ndim == 0},
+                        step=epoch * len(train_loader) + step)
 
             if global_step % 1500 == 0 and step > 0:
                 # Save model
@@ -334,14 +320,15 @@ if __name__ == "__main__":
     recon_loss_weight = 1.0
     loss_config = LossWeights(disc_d_start=3000,
                               disc_g_start=3000,
-                              disc_d_flip=6000)
+                              disc_d_flip=6000,
+                              adversarial_weight=0.5)
 
     # with fake_pmap_and_jit():
     #     main(rng, img_size=96, batch_size=2, num_workers=8, n_epochs=1, loss_config=loss_config)
     # main(rng, img_size=96, batch_size=2, num_workers=8, n_epochs=1, loss_config=loss_config)
 
     with Profile() as pr:
-        main(rng, img_size=96, batch_size=128, num_workers=8, n_epochs=50, loss_config=loss_config)
+        main(rng, img_size=96, batch_size=140, num_workers=12, n_epochs=50, loss_config=loss_config)
 
     stats = Stats(pr, stream=open('profile_stats.txt', 'w'))
     stats.strip_dirs()
