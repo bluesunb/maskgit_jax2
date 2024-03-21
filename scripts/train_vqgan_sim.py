@@ -192,7 +192,7 @@ def train_step(vqgan_state: TrainState,
     return (vqgan_state, disc_state), result
 
 
-def reconstruct_image(vqgan_state, disc_state, batch, rng, lpips):
+def reconstruct_image(vqgan_state, disc_state, batch, rng):
     rng_names = {'vqgan': ('dropout', ), 'disc': ()}
     x_recon, q_loss, result = vqgan_state(batch, train=False, rngs=make_rngs(rng, rng_names['vqgan']))
     # percept_loss = lpips(x_recon, batch).mean()
@@ -258,18 +258,20 @@ def main(rng,
                             tx=optax.chain(optax.zero_nans(), optax.adam(2.25e-5)),
                             init_batch_shape=(1, img_size, img_size, 3))
 
-    lpips1 = LPIPS()
-    lpips1 = lpips1.bind(
-        lpips1.init(rng, jp.ones((1, img_size, img_size, 3)), jp.ones((1, img_size, img_size, 3)))
-    )
+    # lpips1 = LPIPS()
+    # lpips1 = lpips1.bind(
+    #     lpips1.init(rng, jp.ones((1, img_size, img_size, 3)), jp.ones((1, img_size, img_size, 3)))
+    # )
+    #
+    # lpips2 = LPIPS()
+    # lpips2 = lpips2.bind(
+    #     lpips2.init(rng, jp.ones((1, img_size, img_size, 3)), jp.ones((1, img_size, img_size, 3)))
+    # )
 
-    lpips2 = LPIPS()
-    lpips2 = lpips2.bind(
-        lpips2.init(rng, jp.ones((1, img_size, img_size, 3)), jp.ones((1, img_size, img_size, 3)))
-    )
-
-    parallel_train_step = jax.pmap(partial(train_step, lpips=lpips1, config=loss_config, pmap_axis='batch'), axis_name='batch')
-    parallel_recon_step = jax.pmap(partial(reconstruct_image, lpips=lpips2))
+    # parallel_train_step = jax.pmap(partial(train_step, lpips=lpips1, config=loss_config, pmap_axis='batch'), axis_name='batch')
+    parallel_train_step = jax.pmap(partial(train_step, config=loss_config, pmap_axis='batch'), axis_name='batch')
+    # parallel_recon_step = jax.pmap(partial(reconstruct_image, lpips=lpips2))
+    parallel_recon_step = jax.pmap(reconstruct_image)
 
     vqgan_state = flax.jax_utils.replicate(vqgan_state)
     disc_state = flax.jax_utils.replicate(disc_state)
@@ -295,6 +297,7 @@ def main(rng,
             global_step = epoch * len(train_loader) + step
             run.log({k: v.item() for k, v in info.items() if v.ndim == 0},
                     step=epoch * len(train_loader) + step)
+            run.log({'step': vqgan_state.step[0]}, step=global_step)
 
             if global_step % 1500 == 0 and step > 0:
                 # Save model
@@ -333,7 +336,8 @@ if __name__ == "__main__":
     recon_loss_weight = 1.0
     loss_config = LossWeights(disc_d_start=3000,
                               disc_g_start=3000,
-                              disc_d_flip=6000)
+                              disc_d_flip=6000,
+                              adversarial_weight=0.5)
 
     # with fake_pmap_and_jit():
     #     main(rng, img_size=96, batch_size=2, num_workers=8, n_epochs=1, loss_config=loss_config)
