@@ -118,8 +118,8 @@ def train_step(vqgan_state: TrainState,
         rngs_disc = make_rngs(rng, rng_names['disc'])
         x_recon, q_loss, result = vqgan_state(batch, train=True, params=params, rngs=rngs_vq)
         logits_fake = disc_state(x_recon, train=False, rngs=rngs_disc)
-        # g_loss, _ = vanilla_d_loss(logits_fake)
-        g_loss = jp.mean(jax.nn.softplus(logits_fake))
+        # if logits_fake is high, discriminator is totally decieved then, loss of generator should be low.
+        g_loss = jp.mean(jax.nn.softplus(-logits_fake)) * 2
         return g_loss * 0.5
 
     def loss_fn_disc(params):
@@ -130,9 +130,9 @@ def train_step(vqgan_state: TrainState,
         x_recon = jax.lax.stop_gradient(x_recon)
 
         logits_fake, updates = disc_state(x_recon, train=True, rngs=rngs_disc,
-                                          params=params, mutable=['batch_stats'])
+                                          params=params, mutable=['batch_stats'])   # expect to be high
         logits_real, updates = disc_state(batch, train=True, rngs=rngs_disc,
-                                          params=params, extra_variables=updates, mutable=['batch_stats'])
+                                          params=params, extra_variables=updates, mutable=['batch_stats'])  # expect to be low
 
         # loss_fake = jp.mean(jax.nn.relu(1.0 + logits_fake))
         # loss_real = jp.mean(jax.nn.relu(1.0 - logits_real))
@@ -151,8 +151,8 @@ def train_step(vqgan_state: TrainState,
 
         # flip_update = jp.logical_and(disc_state.step < config.disc_d_flip, jp.mod(disc_state.step, 3) == 0)
         disc_weight = jp.asarray(disc_state.step > config.disc_d_start, dtype=jp.float32)
-        loss_real = jp.mean(jax.nn.softplus(1 - logits_real))
-        loss_fake = jp.mean(jax.nn.softplus(1 + logits_fake))
+        loss_real = jp.mean(jax.nn.softplus(1 - logits_real))       # high real -> good for discriminator -> accurately classified
+        loss_fake = jp.mean(jax.nn.softplus(1 + logits_fake))       # low fake -> good for discriminator -> accurately classified
         # loss_real, loss_fake = jax.lax.cond(flip_update, positive_branch, negative_branch, (logits_real, logits_fake))
         disc_loss = (loss_real + loss_fake) * 0.5 * disc_weight
         return disc_loss, (updates, {'loss_real': loss_real, 'loss_fake': loss_fake})
