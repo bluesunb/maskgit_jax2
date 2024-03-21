@@ -61,8 +61,7 @@ def save_state(state: TrainState, path: str, step: int):
         shutil.rmtree(path)
     state = flax.jax_utils.unreplicate(state)
     state = jax.device_get(state)
-    state = checkpoints.save_checkpoint(path, state, step)
-    return state
+    checkpoints.save_checkpoint(path, target=state, step=step, overwrite=True, keep=2)
 
 
 def vanilla_d_loss(logits_fake, logits_real = None):
@@ -91,7 +90,7 @@ def train_step(vqgan_state: TrainState,
                disc_state: TrainState,
                batch: jp.ndarray,
                rng: jp.ndarray,
-               lpips: LPIPS,
+               # lpips: LPIPS,
                config: LossWeights,
                pmap_axis: str = None):
 
@@ -102,7 +101,8 @@ def train_step(vqgan_state: TrainState,
         x_recon, q_loss, result = vqgan_state(batch, train=True, params=params, rngs=rngs)
         log_laplace_loss = jp.abs(x_recon - batch).mean()
         log_gaussian_loss = optax.l2_loss(x_recon, batch).mean()
-        percept_loss = lpips(batch, x_recon).mean()
+        # percept_loss = lpips(batch, x_recon).mean()
+        percept_loss = 0
         nll_loss = (log_laplace_loss * config.log_laplace_weight
                     + log_gaussian_loss * config.log_gaussian_weight
                     + percept_loss * config.percept_weight)
@@ -116,7 +116,7 @@ def train_step(vqgan_state: TrainState,
         rngs_disc = make_rngs(rng, rng_names['disc'])
         x_recon, q_loss, result = vqgan_state(batch, train=True, params=params, rngs=rngs_vq)
         logits_fake = disc_state(x_recon, train=False, rngs=rngs_disc)
-        g_loss, _ = vanilla_d_loss(logits_fake)
+        g_loss = jp.mean(jax.nn.softplus(-logits_fake)) * 2
         return g_loss * 0.5
 
     def loss_fn_disc(params):
@@ -136,19 +136,23 @@ def train_step(vqgan_state: TrainState,
         # # disc_loss = hinge_d_loss(logits_fake, logits_real)
         # disc_loss = 0.5 * (loss_fake + loss_real)
 
-        def positive_branch(arg):
+        def positive_branch(arg):   # loss for generator
             logits_real, logits_fake = arg
-            loss_real, loss_fake = vanilla_d_loss(logits_real, logits_fake)
+            # loss_real, loss_fake = vanilla_d_loss(logits_real, logits_fake)
+            loss_real = jp.mean(jax.nn.softplus(logits_real))
+            loss_fake = jp.mean(jax.nn.softplus(-logits_fake))
             return loss_real, loss_fake
 
-        def negative_branch(arg):
+        def negative_branch(arg):   # loss for discriminator
             logits_real, logits_fake = arg
-            loss_fake, loss_real = vanilla_d_loss(logits_fake, logits_real)
+            # loss_fake, loss_real = vanilla_d_loss(logits_fake, logits_real)
+            loss_real = jp.mean(jax.nn.softplus(-logits_real))
+            loss_fake = jp.mean(jax.nn.softplus(logits_fake))
             return loss_real, loss_fake
 
         flip_update = jp.logical_and(disc_state.step < config.disc_d_flip, jp.mod(disc_state.step, 3) == 0)
-        disc_weight = jp.asarray(disc_state.step > config.disc_d_start, dtype=jp.float32)
         loss_real, loss_fake = jax.lax.cond(flip_update, positive_branch, negative_branch, (logits_real, logits_fake))
+        disc_weight = jp.asarray(disc_state.step > config.disc_d_start, dtype=jp.float32)
         disc_loss = (loss_real + loss_fake) * 0.5 * disc_weight
         return disc_loss, (updates, {'loss_real': loss_real, 'loss_fake': loss_fake})
 
@@ -161,7 +165,7 @@ def train_step(vqgan_state: TrainState,
     last_layer_nll = jp.linalg.norm(nll_grads['decoder']['ConvOut']['kernel'])
     last_layer_gen = jp.linalg.norm(g_grads['decoder']['ConvOut']['kernel'])
 
-    disc_weight_factor = jp.where(vqgan_state.step < config.disc_g_start, config.adversarial_weight, 0.0)
+    disc_weight_factor = jp.where(vqgan_state.step > config.disc_g_start, config.adversarial_weight, 0.0)
     disc_weight = last_layer_nll / (last_layer_gen + 1e-4) * disc_weight_factor
     disc_weight = jp.clip(disc_weight, 0, 1e4)
 
@@ -191,7 +195,8 @@ def train_step(vqgan_state: TrainState,
 def reconstruct_image(vqgan_state, disc_state, batch, rng, lpips):
     rng_names = {'vqgan': ('dropout', ), 'disc': ()}
     x_recon, q_loss, result = vqgan_state(batch, train=False, rngs=make_rngs(rng, rng_names['vqgan']))
-    percept_loss = lpips(x_recon, batch).mean()
+    # percept_loss = lpips(x_recon, batch).mean()
+    percept_loss = 0
     recon_loss = optax.l2_loss(x_recon, batch).mean()
 
     logits_fake = disc_state(x_recon, train=False, rngs=make_rngs(rng, rng_names['disc']))
@@ -293,22 +298,25 @@ def main(rng,
 
             if global_step % 1500 == 0 and step > 0:
                 # Save model
-                save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_{epoch}_{step}.ckpt'), vqgan_state.step[0])
-                save_state(disc_state, os.path.join(ckpt_path, f'disc_{epoch}_{step}.ckpt'), disc_state.step[0])
+                save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_last.ckpt'), vqgan_state.step[0])
+                save_state(disc_state, os.path.join(ckpt_path, f'disc_last.ckpt'), disc_state.step[0])
                 print(f'Model saved ({epoch}, {step})')
 
             if global_step % 250 == 0:
                 # Save image
                 x_recon, recon_info = parallel_recon_step(vqgan_state, disc_state, sample_batch, device_rngs)
-                x_recon = jax.device_get(x_recon[0]).squeeze()
-                original = jax.device_get(sample_batch[0][0]).squeeze()
+                x_recon = jax.device_get(x_recon).squeeze()
+                original = jax.device_get(sample_batch).squeeze()
                 recon_info = unreplicate_dict(recon_info)
-                run.log({'reconstructions': wandb.Image(np.concatenate([original, x_recon], axis=1)),
+
+                x_recon = np.concatenate(x_recon, 1)
+                original = np.concatenate(original, 1)
+                run.log({'reconstructions': wandb.Image(np.concatenate([original, x_recon], axis=0)),
                          **recon_info},
                         step=global_step)
 
-    save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_{epoch}_{step}.ckpt'), vqgan_state.step[0])
-    save_state(disc_state, os.path.join(ckpt_path, f'disc_{epoch}_{step}.ckpt'), disc_state.step[0])
+    save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_final.ckpt'), vqgan_state.step[0])
+    save_state(disc_state, os.path.join(ckpt_path, f'disc_final.ckpt'), disc_state.step[0])
     print(f'Model saved ({epoch}, {step})')
     run.finish()
 
