@@ -21,8 +21,10 @@ def numpy_collate(batch):
     
 
 class ImagePaths(Dataset):
-    def __init__(self, path: str, transform=None):
+    def __init__(self, path: str, transform=None, max_size=None):
         self.images = [os.path.join(path, img) for img in os.listdir(path)]
+        if max_size:
+            self.images = self.images[:max_size]
         self._length = len(self.images)
         self.transform = transform
 
@@ -36,8 +38,8 @@ class ImagePaths(Dataset):
         return img
     
 
-def load_folder_data(path: str, batch_size: int, shuffle: bool = False, num_workers: int = 0, transform=None):
-    train_set = ImagePaths(path, transform=transform)
+def load_folder_data(path: str, batch_size: int, shuffle: bool = False, num_workers: int = 0, transform=None, max_size: int = None):
+    train_set = ImagePaths(path, transform=transform, max_size=max_size)
     loader = DataLoader(train_set, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, collate_fn=numpy_collate, drop_last=True)
     return loader
 
