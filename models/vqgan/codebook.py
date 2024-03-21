@@ -78,6 +78,7 @@ class VectorQuantizer(nn.Module):
 
     @nn.compact
     def __call__(self, x: jp.ndarray, train: bool = True):
+        # x: (bs, h, w, emb_channels)
         n_tokens = self.config.codebook_size
         codebook = self.param("codebook", 
                               nn.initializers.variance_scaling(scale=1.0, mode="fan_in", distribution="uniform"), 

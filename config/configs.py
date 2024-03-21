@@ -34,9 +34,10 @@ class TransformerConfig:
     resid_pdrop: float = 0.1
     ff_pdrop: float = 0.1
 
-    n_tokens: int = 24    # number of img tokens = seq_len
-    codebook_size: int = 1024    # codebook tokens = VQConfig.codebook_size
+    n_tokens: int = 24      # number of img tokens = seq_len
+    codebook_size: int = 1024   # codebook tokens = VQConfig.codebook_size
     temperature: float = 4.5
+    mask_scheme: str = "cosine"
 
 
 @dataclass
