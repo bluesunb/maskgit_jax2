@@ -182,12 +182,12 @@ def train_step(vqgan_state: TrainState,
 
     result.update(d_result)
 
-    # last_layer_nll = jp.linalg.norm(nll_grads['decoder']['ConvOut']['kernel'])
-    # last_layer_gen = jp.linalg.norm(g_grads['decoder']['ConvOut']['kernel'])
+    last_layer_nll = jp.linalg.norm(nll_grads['decoder']['ConvOut']['kernel'])
+    last_layer_gen = jp.linalg.norm(g_grads['decoder']['ConvOut']['kernel'])
 
     disc_weight_factor = jp.where(vqgan_state.step > config.disc_g_start, config.adversarial_weight, 0.0)
-    # disc_weight = last_layer_nll / (last_layer_gen + 1e-4) * disc_weight_factor
-    disc_weight = disc_weight_factor
+    disc_weight = last_layer_nll / (last_layer_gen + 1e-4) * disc_weight_factor
+    # disc_weight = disc_weight_factor
     disc_weight = jp.clip(disc_weight, 0, 1e4)
 
     g_grads = jax.tree_map(lambda x: x * disc_weight, g_grads)
@@ -246,10 +246,10 @@ def main(rng,
 
     train_loader = load_folder_data(os.path.expanduser("~/PycharmProjects/Datasets/ILSVRC2012_img_test/test"),
                                     batch_size=batch_size, shuffle=True, num_workers=num_workers, transform=train_transform,
-                                    max_size=2 * batch_size)
+                                    max_size=200 * batch_size)
     test_loader = load_folder_data(os.path.expanduser("~/PycharmProjects/Datasets/ILSVRC2012_img_test/test"),
                                    batch_size=batch_size, shuffle=False, num_workers=num_workers, transform=test_transform,
-                                   max_size=2 * batch_size)
+                                   max_size=200 * batch_size)
 
     # train_loader = load_stl(os.path.expanduser('~/PycharmProjects/Datasets'), 'train+unlabeled',
     #                         batch_size=batch_size, shuffle=True, num_workers=num_workers)
@@ -308,34 +308,36 @@ def main(rng,
     # ckpt_path = os.path.abspath('./checkpoints/')
 
     log = defaultdict(list)
-    pbar = tqdm(range(n_epochs), desc=f"Epoch 0/{n_epochs}")
-    # for epoch in range(n_epochs):
-    for epoch in pbar:
-        # pbar = tqdm(test_loader, desc=f"Epoch {epoch}/{n_epochs}")
-        for step, batch in enumerate(test_loader):
+    # pbar = tqdm(range(n_epochs), desc=f"Epoch 0/{n_epochs}")
+    for epoch in range(n_epochs):
+    # for epoch in pbar:
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{n_epochs}")
+        # for step, batch in enumerate(train_loader):
+        for step, batch in enumerate(pbar):
             if isinstance(batch, (list, tuple)):
                 batch = batch[0]
             batch = shard(batch)
             rng, device_rngs = jax.random.split(rng)
             device_rngs = shard_prng_key(device_rngs)
             (vqgan_state, disc_state), info = parallel_train_step(vqgan_state, disc_state, batch, device_rngs)
-            global_step = epoch * len(test_loader) + step
+            global_step = epoch * len(train_loader) + step
 
-            if global_step % 50 == 0:
-                info = unreplicate_dict(info)
-                pbar.set_postfix({'vq_loss': info['nll_loss'] + info['g_loss'],
-                                  'disc_loss': info['d_loss'],
-                                  'g_loss': info['g_loss'],
-                                  'd_loss': info['d_loss']})
+            # if global_step % 50 == 0:
+            info = unreplicate_dict(info)
+            pbar.set_postfix({'vq_loss': info['nll_loss'] + info['g_loss'],
+                              'disc_loss': info['d_loss'],
+                              'g_loss': info['g_loss'],
+                              'd_loss': info['d_loss']})
+
+            log = merge_dict(log, {k: v.item() for k, v in info.items() if v.ndim == 0})
+            log['step'].append(vqgan_state.step[0].item())
+            pbar.set_description(f'Epoch {epoch}/{n_epochs}, step {disc_state.step[0]}/{len(train_loader)} ({vqgan_state.step[0]}):')
 
                 # print(f'Epoch {epoch}/{n_epochs}, step {step}/{len(train_loader)}: step: {global_step}')
                 # pprint({'vq_loss': info['nll_loss'] + info['g_loss'],
                 #         'disc_loss': info['d_loss'],
                 #         'disc_weight': info['disc_weight']})
 
-                log = merge_dict(log, {k: v.item() for k, v in info.items() if v.ndim == 0})
-                log['step'].append(vqgan_state.step[0].item())
-                pbar.set_description(f'Epoch {epoch}/{n_epochs}, step {disc_state.step[0]}/{len(train_loader)} ({vqgan_state.step[0]}):')
 
             # run.log({k: v.item() for k, v in info.items() if v.ndim == 0},
             #         step=epoch * len(train_loader) + step)
@@ -392,10 +394,10 @@ if __name__ == "__main__":
     disc_start = 10000
     percept_loss_weight = 1.0
     recon_loss_weight = 1.0
-    loss_config = LossWeights(disc_d_start=1500,
-                              disc_g_start=1500,
-                              disc_d_flip=0,
-                              adversarial_weight=0.05)
+    loss_config = LossWeights(disc_d_start=5000,
+                              disc_g_start=5000,
+                              disc_d_flip=6500,
+                              adversarial_weight=0.1)
 
     # with chex.fake_pmap():
     #     main(rng, img_size=96, batch_size=8, num_workers=8, n_epochs=50, loss_config=loss_config)
@@ -403,7 +405,7 @@ if __name__ == "__main__":
 
     # with Profile() as pr:
     # with chex.fake_pmap_and_jit():
-    main(rng, img_size=96, batch_size=4, num_workers=0, n_epochs=2000, loss_config=loss_config)
+    main(rng, img_size=96, batch_size=140, num_workers=8, n_epochs=50, loss_config=loss_config)
 
     stats = Stats(pr, stream=open('profile_stats.txt', 'w'))
     stats.strip_dirs()
