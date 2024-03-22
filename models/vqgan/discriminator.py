@@ -72,15 +72,15 @@ if __name__ == "__main__":
     rng, init_rng = jax.random.split(rng)
     x = jax.random.normal(rng, (1, 256, 256, 3))
     model1 = Discriminator(n_layers=5)
-    model2 = Discriminator2(n_layers=5)
+    # model2 = Discriminator2(n_layers=5)
 
     param1 = jax.jit(model1.init)({'params': init_rng, 'dropout': init_rng}, x, True)
-    param2 = jax.jit(model2.init)({'params': init_rng, 'dropout': init_rng}, x, True)
+    # param2 = jax.jit(model2.init)({'params': init_rng, 'dropout': init_rng}, x, True)
 
     a1 = jax.jit(model1.apply)
-    a2 = jax.jit(model2.apply)
+    # a2 = jax.jit(model2.apply)
 
     y1 = a1(param1, x)
-    y2 = a2(param2, x)
+    # y2 = a2(param2, x)
 
     print(y1.shape, y2.shape)

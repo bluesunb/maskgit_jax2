@@ -123,7 +123,8 @@ def train_step(vqgan_state: TrainState,
     def loss_fn_nll(params):
         rngs = make_rngs(rng, rng_names['vqgan'])
         x_recon, q_loss, result = vqgan_state(batch, train=True, params=params, rngs=rngs)
-        log_laplace_loss = jp.abs(x_recon - batch).mean()
+        # log_laplace_loss = jp.abs(x_recon - batch).mean()
+        log_laplace_loss = 0
         log_gaussian_loss = optax.l2_loss(x_recon, batch).mean()
         # percept_loss = lpips(batch, x_recon).mean()
         percept_loss = 0
@@ -246,10 +247,10 @@ def main(rng,
 
     train_loader = load_folder_data(os.path.expanduser("~/PycharmProjects/Datasets/ILSVRC2012_img_test/test"),
                                     batch_size=batch_size, shuffle=True, num_workers=num_workers, transform=train_transform,
-                                    max_size=200 * batch_size)
+                                    max_size=400 * batch_size)
     test_loader = load_folder_data(os.path.expanduser("~/PycharmProjects/Datasets/ILSVRC2012_img_test/test"),
                                    batch_size=batch_size, shuffle=False, num_workers=num_workers, transform=test_transform,
-                                   max_size=200 * batch_size)
+                                   max_size=400 * batch_size)
 
     # train_loader = load_stl(os.path.expanduser('~/PycharmProjects/Datasets'), 'train+unlabeled',
     #                         batch_size=batch_size, shuffle=True, num_workers=num_workers)
@@ -262,12 +263,14 @@ def main(rng,
         sample_batch = sample_batch[0]
     sample_batch = shard(sample_batch[0:4])
 
-    enc_config = AutoencoderConfig(out_channels=256)
-    dec_config = AutoencoderConfig(out_channels=3)
-    vq_config = VQConfig(codebook_size=1024)
+    enc_config = AutoencoderConfig(out_channels=128,
+                                   channel_multipliers=(1, 2, 2, 4))
+    dec_config = AutoencoderConfig(out_channels=3,
+                                   channel_multipliers=(1, 2, 2, 4))
+    vq_config = VQConfig(codebook_size=512)
 
     gan = VQGAN(enc_config, dec_config, vq_config)
-    discriminator = Discriminator(emb_channels=64, n_layers=3)
+    discriminator = Discriminator(emb_channels=128, n_layers=3)
     # trainer_model = VQGANTrainer(gan, discriminator)
     # state = make_state(rngs=make_rngs(rng, rng_names, contain_params=True),
     #                    model=trainer_model,
@@ -276,12 +279,12 @@ def main(rng,
 
     vqgan_state = make_state(rngs=make_rngs(rng, ('dropout', ), contain_params=True),
                              model=gan,
-                             tx=optax.chain(optax.zero_nans(), optax.adam(2.25e-5)),
+                             tx=optax.chain(optax.zero_nans(), optax.adam(4e-5)),
                              init_batch_shape=(1, img_size, img_size, 3))
 
     disc_state = make_state(rngs=make_rngs(rng, contain_params=True),
                             model=discriminator,
-                            tx=optax.chain(optax.zero_nans(), optax.adam(2.25e-5)),
+                            tx=optax.chain(optax.zero_nans(), optax.adam(4e-5)),
                             init_batch_shape=(1, img_size, img_size, 3))
 
     # lpips1 = LPIPS()
@@ -303,9 +306,9 @@ def main(rng,
     disc_state = flax.jax_utils.replicate(disc_state)
     unreplicate_dict = lambda x: jax.tree_map(lambda y: jax.device_get(y[0]), x)
 
-    # wandb.init(project='maskgit', dir=os.path.abspath('./wandb'), name=f'maskgit_{get_now_str()}')
-    # run = wandb.run
-    # ckpt_path = os.path.abspath('./checkpoints/')
+    wandb.init(project='maskgit', dir=os.path.abspath('./wandb'), name=f'maskgit_{get_now_str()}')
+    run = wandb.run
+    ckpt_path = os.path.abspath('./checkpoints/')
 
     log = defaultdict(list)
     # pbar = tqdm(range(n_epochs), desc=f"Epoch 0/{n_epochs}")
@@ -313,25 +316,30 @@ def main(rng,
     # for epoch in pbar:
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{n_epochs}")
         # for step, batch in enumerate(train_loader):
-        for step, batch in enumerate(pbar):
+        for batch in pbar:
             if isinstance(batch, (list, tuple)):
                 batch = batch[0]
             batch = shard(batch)
             rng, device_rngs = jax.random.split(rng)
             device_rngs = shard_prng_key(device_rngs)
             (vqgan_state, disc_state), info = parallel_train_step(vqgan_state, disc_state, batch, device_rngs)
-            global_step = epoch * len(train_loader) + step
+            # global_step = epoch * len(train_loader) + step
+            global_step = vqgan_state.step[0].item()
 
-            # if global_step % 50 == 0:
-            info = unreplicate_dict(info)
-            pbar.set_postfix({'vq_loss': info['nll_loss'] + info['g_loss'],
-                              'disc_loss': info['d_loss'],
-                              'g_loss': info['g_loss'],
-                              'd_loss': info['d_loss']})
+            if global_step % 10 == 0:
+                info = unreplicate_dict(info)
+                pbar.set_postfix({'vq_loss': info['nll_loss'] + info['g_loss'],
+                                  'disc_loss': info['d_loss'],
+                                  'g_loss': info['g_loss'],
+                                  'd_loss': info['d_loss']})
 
-            log = merge_dict(log, {k: v.item() for k, v in info.items() if v.ndim == 0})
-            log['step'].append(vqgan_state.step[0].item())
-            pbar.set_description(f'Epoch {epoch}/{n_epochs}, step {disc_state.step[0]}/{len(train_loader)} ({vqgan_state.step[0]}):')
+            run.log({k: v.item() for k, v in info.items() if v.ndim == 0},
+                    step=global_step)
+
+            # log = merge_dict(log, {k: v.item() for k, v in info.items() if v.ndim == 0})
+            # log['step'].append(vqgan_state.step[0].item())
+            # pbar.set_description(f'Epoch {epoch}/{n_epochs}, step {step}/{len(train_loader)} ({vqgan_state.step[0]}):')
+            pbar.set_description(f'Epoch {epoch}/{n_epochs}, step {global_step}:')
 
                 # print(f'Epoch {epoch}/{n_epochs}, step {step}/{len(train_loader)}: step: {global_step}')
                 # pprint({'vq_loss': info['nll_loss'] + info['g_loss'],
@@ -351,37 +359,37 @@ def main(rng,
 
             # if global_step % 250 == 0:
             #     Save image
-            if global_step % 150 == 0:
+            if global_step % 200 == 0:
                 x_recon, recon_info = parallel_recon_step(vqgan_state, disc_state, sample_batch, device_rngs)
                 x_recon = jax.device_get(x_recon).squeeze()
                 original = jax.device_get(sample_batch).squeeze()
-                # recon_info = unreplicate_dict(recon_info)
+                recon_info = unreplicate_dict(recon_info)
 
                 x_recon = np.concatenate(x_recon, 1)
                 original = np.concatenate(original, 1)
                 image = np.concatenate([original, x_recon], 0)
                 image = (image * 255).astype(np.uint8)
                 image = Image.fromarray(image)
-                image.save(f'./image/{epoch}_{step}.png')
+                image.save(f'./image/{epoch}_{global_step % len(train_loader)}.png')
+                run.log({'reconstructions': wandb.Image(image), global_step: global_step})
+                run.log({f'recon/{k}': v.item() for k, v in recon_info.items() if v.ndim == 0}, global_step=global_step)
     #             run.log({'reconstructions': wandb.Image(np.concatenate([original, x_recon], axis=0)),
     #                      **recon_info},
     #                     step=global_step)
     #
-    # save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_final.ckpt'), vqgan_state.step[0])
-    # save_state(disc_state, os.path.join(ckpt_path, f'disc_final.ckpt'), disc_state.step[0])
-    # print(f'Model saved ({epoch}, {step})')
-    # run.finish()
+    save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_final.ckpt'), vqgan_state.step[0])
+    save_state(disc_state, os.path.join(ckpt_path, f'disc_final.ckpt'), disc_state.step[0])
+    print(f'Model saved ({epoch}, {global_step % len(train_loader)})')
+    run.finish()
 
-    import pandas
-    log_df = pandas.DataFrame(log)
-    fig, axes = plt.subplots(3, 5, figsize=(15, 10))
-    for i, col in enumerate(log_df.columns):
-        axes[i//5, i%5].plot(log_df[col])
-        axes[i//5, i%5].set_title(col)
-    # log_df['step'].plot()
-    # log_df['nll_loss'].plot()
-    plt.tight_layout()
-    plt.show()
+    # import pandas
+    # log_df = pandas.DataFrame(log)
+    # fig, axes = plt.subplots(3, 5, figsize=(15, 10))
+    # for i, col in enumerate(log_df.columns):
+    #     axes[i//5, i%5].plot(log_df[col])
+    #     axes[i//5, i%5].set_title(col)
+    # plt.tight_layout()
+    # plt.show()
 
 
 if __name__ == "__main__":
@@ -405,7 +413,7 @@ if __name__ == "__main__":
 
     # with Profile() as pr:
     # with chex.fake_pmap_and_jit():
-    main(rng, img_size=96, batch_size=140, num_workers=8, n_epochs=50, loss_config=loss_config)
+    main(rng, img_size=96, batch_size=140, num_workers=10, n_epochs=50, loss_config=loss_config)
 
     stats = Stats(pr, stream=open('profile_stats.txt', 'w'))
     stats.strip_dirs()

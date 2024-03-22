@@ -344,7 +344,7 @@ if __name__ == "__main__":
     # main(rng, img_size=96, batch_size=2, num_workers=8, n_epochs=1, loss_config=loss_config)
 
     with Profile() as pr:
-        main(rng, img_size=96, batch_size=128, num_workers=8, n_epochs=50, loss_config=loss_config)
+        main(rng, img_size=96, batch_size=128, num_workers=0, n_epochs=50, loss_config=loss_config)
 
     stats = Stats(pr, stream=open('profile_stats.txt', 'w'))
     stats.strip_dirs()

@@ -40,7 +40,8 @@ class ImagePaths(Dataset):
 
 def load_folder_data(path: str, batch_size: int, shuffle: bool = False, num_workers: int = 0, transform=None, max_size: int = None):
     train_set = ImagePaths(path, transform=transform, max_size=max_size)
-    loader = DataLoader(train_set, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, collate_fn=numpy_collate, drop_last=True)
+    loader = DataLoader(train_set, batch_size=batch_size, shuffle=shuffle, collate_fn=numpy_collate,
+                        drop_last=True, num_workers=num_workers, pin_memory=False)
     return loader
 
 

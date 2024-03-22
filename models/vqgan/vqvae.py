@@ -94,7 +94,7 @@ if __name__ == "__main__":
     
     dec_config = AutoencoderConfig(channels=64,
                                    out_channels=3,
-                                   channel_multipliers=[1, 1, 2, 2, 4],
+                                   channel_multipliers=[1, 1, 2, 2, 4,],
                                    attn_resolutions=[24],
                                    n_blocks=2,
                                    dropout_rate=0.1,
