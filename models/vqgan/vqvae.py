@@ -43,7 +43,7 @@ class VQGAN(nn.Module):
     enc_config: AutoencoderConfig
     dec_config: AutoencoderConfig
     vq_config: VQConfig
-    train: bool = True
+    training: bool = None
 
     def setup(self):
         self.n_tokens = self.vq_config.codebook_size
@@ -55,30 +55,30 @@ class VQGAN(nn.Module):
         self.conv = nn.Conv(self.emb_dim, kernel_size=(1, 1))
         self.post_conv = nn.Conv(self.emb_dim, kernel_size=(1, 1))
 
-    def encode(self, x: jp.ndarray):
-        x_enc = self.encoder(x, self.train)
+    def encode(self, x: jp.ndarray, train: bool = None):
+        x_enc = self.encoder(x, train)
         x_enc = self.conv(x_enc)
         # quantized, result = self.vq(x_enc, train)
         # vq_loss = result.pop('vq_loss', 0.0)
         # return quantized, vq_loss, result
         return x_enc
 
-    def decode(self, x: jp.ndarray,):
+    def decode(self, x: jp.ndarray, train: bool = None):
         x = self.post_conv(x)
-        return self.decoder(x, self.train)
+        return self.decoder(x, train)
     
-    def quantize(self, x: jp.ndarray):
-        quantied, result = self.vq(x, self.train)
+    def quantize(self, x: jp.ndarray, train: bool = None):
+        quantied, result = self.vq(x, train)
         vq_loss = result.pop('vq_loss', 0.0)
         return quantied, vq_loss, result
 
-    def __call__(self, x: jp.ndarray):
+    def __call__(self, x: jp.ndarray, train: bool = None):
         # quantized, loss, result = self.encode(x, train)
+        train = nn.merge_param('training', self.training, train)
         x_enc = self.encode(x)
         quantized, loss, result = self.quantize(x_enc)
         x_rec = self.decode(quantized)
         return x_rec, loss, result
-
 
 
 if __name__ == "__main__":

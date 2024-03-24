@@ -52,12 +52,14 @@ class Discriminator(nn.Module):
     emb_channels: int = 64
     kernel_size: int = 4
     n_layers: int = 3
+    training: bool = None
 
     def setup(self):
         self.block = nn.Sequential([DiscriminatorBlock(self.emb_channels, idx=i) for i in range(self.n_layers)])
 
     @nn.compact
-    def __call__(self, x: jp.ndarray, train: bool = True):
+    def __call__(self, x: jp.ndarray, train: bool = None):
+        train = nn.merge_param('training', self.training, train)
         x = nn.Conv(self.emb_channels, (1, 1), padding='SAME')(x)
         x = nn.leaky_relu(x, negative_slope=0.2)
         x = self.block(x)

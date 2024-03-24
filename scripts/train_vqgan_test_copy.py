@@ -48,7 +48,7 @@ def get_now_str():
 
 def load_lpips_fn(lpips_def: LPIPS = None, img_size: int = 256, channel: int = 3):
     def identity(*args, **kwargs):
-        return 0
+        return jp.zeros(())
     
     if lpips_def is None:
         return identity
@@ -118,46 +118,49 @@ def prepare_model(config: TrainConfig):
     vqgan_state = make_state(rngs=make_rngs(v_rng, ('dropout', ), contain_params=True),
                              model=gan,
                              tx=optax.chain(optax.zero_nans(), optax.adam(config.lr, b1=config.betas[0], b2=config.betas[1])),
-                             init_batch_shape=(1, img_size, img_size, 3))
+                             inputs=jp.empty((1, img_size, img_size, 3)),
+                             train=True)
 
-    disc_state = make_state(rngs=make_rngs(d_rng, contain_params=True),
+    disc_state = make_state(rngs=make_rngs(d_rng, (), contain_params=True),
                             model=discriminator,
                             tx=optax.chain(optax.zero_nans(), optax.adam(config.lr, b1=config.betas[0], b2=config.betas[1])),
-                            init_batch_shape=(1, img_size, img_size, 3))
+                            inputs=jp.empty((1, img_size, img_size, 3)),
+                            train=True)
     
-    lpips_fn = load_lpips_fn(LPIPS if config.use_lpips else None, img_size, 3)
+    lpips_fn1 = load_lpips_fn(LPIPS if config.use_lpips else None, img_size, 3)
+    lpips_fn2 = load_lpips_fn(LPIPS if config.use_lpips else None, img_size, 3)
     configs = {'enc_config': enc_config, 'dec_config': dec_config, 'vq_config': vq_config}
 
-    return vqgan_state, disc_state, lpips_fn, configs
+    return vqgan_state, disc_state, lpips_fn1, lpips_fn2, configs
 
 
 class Logger:
     def __init__(self):
-        self.log = defaultdict(list)
+        self.log_dict = defaultdict(list)
 
     def log(self, info: dict, step: int):
         flag = False
         for k, v in info.items():
             if hasattr(v, 'ndim') and v.ndim == 0:
-                self.log[k].append(v.item())
+                self.log_dict[k].append(v.item())
                 flag |= True
             elif isinstance(v, Number):
-                self.log[k].append(v)
+                self.log_dict[k].append(v)
                 flat |= True
 
         if flag:
-            self.log['step'].append(step)
+            self.log_dict['step'].append(step)
 
 
 def main(train_config: TrainConfig,
          loss_config: LossWeights):
     
     train_loader, test_loader, test_untransform = prepare_dataset(train_config)
-    vqgan_state, disc_state, lpips_fn, vq_configs = prepare_model(train_config)
+    vqgan_state, disc_state, lpips_fn1, lpips_fn2, vq_configs = prepare_model(train_config)
 
     axis_name = 'batch'
-    p_train_step = jax.pmap(partial(train_step, config=loss_config, lpips_fn=lpips_fn, pmap_axis=axis_name), axis_name=axis_name)
-    p_recon_step = jax.pmap(reconstruct_image, axis_name=axis_name)
+    p_train_step = jax.pmap(partial(train_step, config=loss_config, lpips_fn=lpips_fn1, pmap_axis=axis_name), axis_name=axis_name)
+    p_recon_step = jax.pmap(partial(reconstruct_image, lpips_fn=lpips_fn2), axis_name=axis_name)
 
     vqgan_state = flax.jax_utils.replicate(vqgan_state)
     disc_state = flax.jax_utils.replicate(disc_state)
@@ -203,14 +206,14 @@ def main(train_config: TrainConfig,
             if global_step % train_config.log_freq == 0:
                 info = unreplicate_dict(info)
                 pbar.set_postfix({'loss': info['nll_loss'] + info['g_loss'],
-                                  'd_loss': info['d_loss'],
-                                  'lr': vqgan_state.tx.state[0].learning_rate})
+                                  'd_loss': info['d_loss']})
                 
                 run.log(info, step=global_step)
                 pbar.set_description(pbar.desc + f' Step: {global_step}')
             
             if global_step % train_config.img_log_freq == 0:
-                x_recon, recon_info = p_recon_step(vqgan_state, lpips_fn, sample_batch, device_rngs)
+                lpips_recon = load_lpips_fn(LPIPS if train_config.use_lpips else None, train_config.img_size, 3)
+                x_recon, recon_info = p_recon_step(vqgan_state, lpips_recon, sample_batch, device_rngs)
                 x_recon = jax.device_get(x_recon).squeeze()
                 original = jax.device_get(sample_batch).squeeze()
                 recon_info = unreplicate_dict(recon_info)

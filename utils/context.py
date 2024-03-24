@@ -4,6 +4,8 @@ import jax.numpy as jp
 from scripts.common import TrainState
 from flax.training import train_state, checkpoints
 
+from typing import Union, Sequence, Dict
+
 
 def save_state(state: train_state.TrainState, path: str, step: int):
     if os.path.exists(path):
@@ -19,20 +21,26 @@ def load_state(path: str, state: train_state.TrainState) -> train_state.TrainSta
     return state_dict
 
 
-def make_rngs(rng, names, contain_params = False):
-    if not len(names):
+def make_rngs(rng: jp.ndarray,
+              names: Union[Sequence[str], Dict[str, Sequence[int]]] = None,
+              contain_params: bool = False):
+
+    if names is None:
         return jax.random.split(rng)[1]
-    
-    if contain_params:
-        names = ('params', ) + names
+
+    if isinstance(names, Sequence):
+        rng, *rngs = jax.random.split(rng, len(names) + 1)
+        rngs = {name: r for name, r in zip(names, rngs)}
+        if contain_params:
+            rngs['params'] = rng
+        return rngs
 
     rngs = jax.random.split(rng, len(names))
-    return dict(zip(names, rngs))
+    return {name: make_rngs(r, names[name], contain_params) for name, r in zip(names, rngs)}
 
 
-def make_state(rngs, model, tx, init_batch_shape):
-    inputs = jp.empty(init_batch_shape)
-    variables = jax.jit(model.init, static_argnames=['train'])(rngs, inputs, train=True)
+def make_state(rngs, model, tx, inputs, **kwargs):
+    variables = jax.jit(model.init, static_argnames=['train'])(rngs, inputs, **kwargs)
     state = TrainState.create(model,
                               params=variables.pop('params'),
                               tx=tx,
