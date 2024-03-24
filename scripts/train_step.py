@@ -47,7 +47,7 @@ def train_step(vqgan_state: TrainState,
 
         nll_loss = (l1_loss * config.log_laplace_weight +
                     l2_loss * config.log_gaussian_weight +
-                    percept_loss * config.perceptual_weight)
+                    percept_loss * config.percept_weight)
 
         nll_loss += vq_loss * config.codebook_weight
         result = {'vq': vq_result,
@@ -61,7 +61,7 @@ def train_step(vqgan_state: TrainState,
         x_recon, vq_loss, result = vqgan_state(batch, train=True, params=params, rngs=rngs_vq)
         logits_fake = disc_state(x_recon, train=False, rngs=rngs_disc)
         g_loss = jp.mean(jax.nn.softplus(-logits_fake))      # enlarge logits_fake -> pred to be real
-        return g_loss, {}
+        return g_loss
         
     def loss_fn_disc(params):
         x_recon, vq_loss, vq_result = vqgan_state(batch, train=False, rngs=rngs_vq)
@@ -100,8 +100,8 @@ def train_step(vqgan_state: TrainState,
 
     result['gan'] = d_result
 
-    last_layer_nll = jp.linalg.norm(nll_grads['params']['ConvOut']['kernel'])
-    last_layer_gen = jp.linalg.norm(g_grads['params']['ConvOut']['kernel'])
+    last_layer_nll = jp.linalg.norm(nll_grads['decoder']['ConvOut']['kernel'])
+    last_layer_gen = jp.linalg.norm(g_grads['decoder']['ConvOut']['kernel'])
 
     do_g_grad = jp.where(vqgan_state.step > config.disc_g_start, config.adversarial_weight, 0.0)
     g_grad_weight = last_layer_nll / (last_layer_gen + 1e-4) * do_g_grad
@@ -130,7 +130,7 @@ def train_step(vqgan_state: TrainState,
                    'g_grad_weight': g_grad_weight,
                    'do_g_grad': do_g_grad})
     
-    return (vqgan_state, disc_state, result)
+    return (vqgan_state, disc_state), result
 
 
 def reconstruct_image(vqgan_state: TrainState, 
