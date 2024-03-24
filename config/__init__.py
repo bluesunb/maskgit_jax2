@@ -1,1 +1,1 @@
-from .configs import VQConfig, TransformerConfig, AutoencoderConfig, LossWeights
+from .configs import VQConfig, TransformerConfig, AutoencoderConfig, LossWeights, TrainConfig

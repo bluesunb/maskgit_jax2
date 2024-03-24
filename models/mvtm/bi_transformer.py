@@ -1,7 +1,7 @@
 import math
 import jax, jax.numpy as jp
 import flax.linen as nn
-from chex import assert_equal_shape
+import chex
 from einops import rearrange
 from config import TransformerConfig
 
@@ -61,11 +61,11 @@ class MLP(nn.Module):
 
 
 class TransformerEncoder(nn.Module):
-    confnig: TransformerConfig
+    config: TransformerConfig
 
     @nn.compact
     def __call__(self, x: jp.ndarray, train: bool = True):
-        config = self.confnig
+        config = self.config
         out = MultiHeadAttention(config.emb_dim, config.n_heads, config.attn_pdrop)(x, train)
         out = nn.Dropout(config.resid_pdrop)(out, deterministic=not train)
         x = nn.LayerNorm()(x + out)
@@ -76,16 +76,18 @@ class TransformerEncoder(nn.Module):
 
 class BidirectionalTransformer(nn.Module):
     config: TransformerConfig
+    n_tokens: int
 
     @nn.compact
     def __call__(self, x: jp.ndarray, train: bool = True):
-        assert_equal_shape(x.shape, (None, self.config.n_tokens + 1))
-        seq_len = self.config.n_tokens + 1
-        n_tokens = self.config.codebook_size + 2
+        # assert_equal_shape(x.shape, (None, self.n_tokens + 1))
+        chex.assert_shape(x, (None, self.n_tokens + 1))
+        seq_len = self.n_tokens + 1
+        n_emb_tokens = self.config.codebook_size + 2
         emb_dim = self.config.emb_dim
         pos_embedding = self.param('pos_embedding', nn.initializers.truncated_normal(stddev=0.02), (seq_len, emb_dim))
 
-        tok_emb = nn.Embed(n_tokens, emb_dim, name='tok_embed')(x)
+        tok_emb = nn.Embed(n_emb_tokens, emb_dim, name='tok_embed')(x)
         pos_emb = pos_embedding[:tok_emb.shape[1]]
         x_emb = tok_emb + pos_emb
         x_emb = nn.Dropout(0.1)(x_emb, deterministic=not train)
@@ -97,7 +99,58 @@ class BidirectionalTransformer(nn.Module):
         x_emb = nn.gelu(x_emb)
         x_emb = nn.LayerNorm(epsilon=1e-12)(x_emb)
 
-        bias = self.param('bias', nn.initializers.zeros, (seq_len, n_tokens))
+        bias = self.param('bias', nn.initializers.zeros, (seq_len, n_emb_tokens))
+        logits = jp.matmul(x_emb, self.variables['params']['tok_embed']['embedding'].T) + bias
+        return logits  # (bs, seq_len, n_tokens)
+
+
+class TransformerEncoderBlock(nn.Module):
+    config: TransformerConfig
+    train: bool
+
+    @nn.compact
+    def __call__(self, x: jp.ndarray, _):
+        config = self.config
+        out = MultiHeadAttention(config.emb_dim, config.n_heads, config.attn_pdrop)(x, self.train)
+        out = nn.Dropout(config.resid_pdrop)(out, deterministic=not self.train)
+        x = nn.LayerNorm()(x + out)
+        out = MLP(config.emb_dim, config.intermediate_dim, config.resid_pdrop)(x, self.train)
+        out = nn.LayerNorm()(x + out)
+        return out, _
+
+
+class BidirectionalTransformer2(nn.Module):
+    config: TransformerConfig
+    n_tokens: int
+
+    @nn.compact
+    def __call__(self, x: jp.ndarray, train: bool = True):
+        # assert_equal_shape(x.shape, (None, self.n_tokens + 1))
+        chex.assert_shape(x, (None, self.n_tokens + 1))
+        seq_len = self.n_tokens + 1
+        n_emb_tokens = self.config.codebook_size + 2
+        emb_dim = self.config.emb_dim
+        pos_embedding = self.param('pos_embedding', nn.initializers.truncated_normal(stddev=0.02), (seq_len, emb_dim))
+
+        tok_emb = nn.Embed(n_emb_tokens, emb_dim, name='tok_embed')(x)
+        pos_emb = pos_embedding[:tok_emb.shape[1]]
+        x_emb = tok_emb + pos_emb
+        x_emb = nn.Dropout(0.1)(x_emb, deterministic=not train)
+
+        for _ in range(self.config.n_layers):
+            x_emb = TransformerEncoder(self.config)(x_emb, train)
+
+        scanTransformerEncoder = nn.scan(TransformerEncoderBlock,
+                                         variable_axes={'params': 0}, variable_broadcast=False,
+                                         split_rngs={'params': False, 'dropout': False}, length=self.config.n_layers)
+
+        x_emb = scanTransformerEncoder(self.config, train)(x_emb, None)[0]
+
+        x_emb = nn.Dense(emb_dim, kernel_init=default_kernel, use_bias=False)(x_emb)
+        x_emb = nn.gelu(x_emb)
+        x_emb = nn.LayerNorm(epsilon=1e-12)(x_emb)
+
+        bias = self.param('bias', nn.initializers.zeros, (seq_len, n_emb_tokens))
         logits = jp.matmul(x_emb, self.variables['params']['tok_embed']['embedding'].T) + bias
         return logits  # (bs, seq_len, n_tokens)
 
@@ -110,8 +163,8 @@ if __name__ == "__main__":
                                intermediate_dim=128 * 4,
                                codebook_size=360)
 
-    x = jax.random.randint(rng, (1, 24), 0, config.codebook_size + 1)
-    model = BidirectionalTransformer(config)
+    x = jax.random.randint(rng, (1, 25), 0, config.codebook_size + 1)
+    model = BidirectionalTransformer2(config, 24)
     out, params = model.init_with_output({'params': rng, 'dropout': rng}, x, train=True)
     print(out.shape)
     # from easydict import EasyDict

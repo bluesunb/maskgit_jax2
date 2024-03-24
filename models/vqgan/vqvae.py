@@ -43,6 +43,7 @@ class VQGAN(nn.Module):
     enc_config: AutoencoderConfig
     dec_config: AutoencoderConfig
     vq_config: VQConfig
+    train: bool = True
 
     def setup(self):
         self.n_tokens = self.vq_config.codebook_size
@@ -54,28 +55,28 @@ class VQGAN(nn.Module):
         self.conv = nn.Conv(self.emb_dim, kernel_size=(1, 1))
         self.post_conv = nn.Conv(self.emb_dim, kernel_size=(1, 1))
 
-    def encode(self, x: jp.ndarray, train: bool = True):
-        x_enc = self.encoder(x, train)
+    def encode(self, x: jp.ndarray):
+        x_enc = self.encoder(x, self.train)
         x_enc = self.conv(x_enc)
         # quantized, result = self.vq(x_enc, train)
         # vq_loss = result.pop('vq_loss', 0.0)
         # return quantized, vq_loss, result
         return x_enc
 
-    def decode(self, x: jp.ndarray, train: bool = True):
+    def decode(self, x: jp.ndarray,):
         x = self.post_conv(x)
-        return self.decoder(x, train)
+        return self.decoder(x, self.train)
     
-    def quantize(self, x: jp.ndarray, train: bool = True):
-        quantied, result = self.vq(x, train)
+    def quantize(self, x: jp.ndarray):
+        quantied, result = self.vq(x, self.train)
         vq_loss = result.pop('vq_loss', 0.0)
         return quantied, vq_loss, result
 
-    def __call__(self, x: jp.ndarray, train: bool = True):
+    def __call__(self, x: jp.ndarray):
         # quantized, loss, result = self.encode(x, train)
-        x_enc = self.encode(x, train)
-        quantized, loss, result = self.quantize(x_enc, train)
-        x_rec = self.decode(quantized, train)
+        x_enc = self.encode(x)
+        quantized, loss, result = self.quantize(x_enc)
+        x_rec = self.decode(quantized)
         return x_rec, loss, result
 
 
@@ -105,13 +106,13 @@ if __name__ == "__main__":
                          entropy_loss_weight=0.25,
                          entropy_temperature=0.5)
     
-    model = VQGAN(enc_config, dec_config, vq_config)
+    model = VQGAN(enc_config, dec_config, vq_config, train=True)
 
     rng = jax.random.PRNGKey(0)
     x = jp.ones((1, 256, 256, 3))
     params = model.init({'params': rng, 'dropout': rng}, x)
     def loss_fn(params, x):
-        x_rec, loss, result = model.apply(params, x, train=True, rngs={'dropout': rng})
+        x_rec, loss, result = model.apply(params, x, rngs={'dropout': rng})
         return optax.l2_loss(x, x_rec).mean() + loss
 
     grad_fn = jax.grad(loss_fn)
