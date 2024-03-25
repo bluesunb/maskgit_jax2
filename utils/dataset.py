@@ -3,7 +3,7 @@ import numpy as np
 import torchvision.transforms as T
 from torchvision import datasets as dset
 import torch as th
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
 from PIL import Image
 
 
@@ -20,26 +20,29 @@ def numpy_collate(batch):
     return data
     
 
-class ImagePaths(Dataset):
-    def __init__(self, path: str, transform=None, max_size=None):
-        self.images = [os.path.join(path, img) for img in os.listdir(path)]
-        if max_size:
-            self.images = self.images[:max_size]
-        self._length = len(self.images)
-        self.transform = transform
-
-    def __len__(self):
-        return self._length
-    
-    def __getitem__(self, idx):
-        img = Image.open(self.images[idx])
-        if self.transform:
-            img = self.transform(img)
-        return img
+# class ImagePaths(Dataset):
+#     def __init__(self, path: str, transform=None, max_size=None):
+#         self.images = [os.path.join(path, img) for img in os.listdir(path)]
+#         if max_size:
+#             self.images = self.images[:max_size]
+#         self._length = len(self.images)
+#         self.transform = transform
+#
+#     def __len__(self):
+#         return self._length
+#
+#     def __getitem__(self, idx):
+#         img = Image.open(self.images[idx])
+#         if self.transform:
+#             img = self.transform(img)
+#         return img
     
 
 def load_folder_data(path: str, batch_size: int, shuffle: bool = False, num_workers: int = 0, transform=None, max_size: int = None):
-    train_set = ImagePaths(path, transform=transform, max_size=max_size)
+    # train_set = ImagePaths(path, transform=transform, max_size=max_size)
+    train_set = dset.ImageFolder(path, transform=transform)
+    if max_size:
+        train_set, _ = random_split(train_set, [max_size, len(train_set) - max_size])
     loader = DataLoader(train_set, batch_size=batch_size, shuffle=shuffle, collate_fn=numpy_collate,
                         drop_last=True, num_workers=num_workers)
     return loader
