@@ -146,7 +146,7 @@ class Logger:
                 flag |= True
             elif isinstance(v, Number):
                 self.log_dict[k].append(v)
-                flat |= True
+                flag |= True
 
         if flag:
             self.log_dict['step'].append(step)
@@ -188,12 +188,11 @@ def main(train_config: TrainConfig,
 
     rng = jax.random.PRNGKey(train_config.seed)
     pbar = tqdm(range(train_config.n_epochs))
-    # for epoch in pbar:
-    #     pbar.set_description(f'Epoch {epoch + 1}/{train_config.n_epochs}')
-    #     for batch in train_loader:
-    for epoch in range(train_config.n_epochs):
-        pbar = tqdm(train_loader, desc=f'Epoch {epoch + 1}/{train_config.n_epochs}')
-        for batch in pbar:
+    for epoch in pbar:
+        for batch in train_loader:
+    # for epoch in range(train_config.n_epochs):
+    #     pbar = tqdm(train_loader, desc=f'Epoch {epoch + 1}/{train_config.n_epochs}')
+    #     for batch in pbar:
             if isinstance(batch, (list, tuple)):
                 batch = batch[0]
             
@@ -201,19 +200,18 @@ def main(train_config: TrainConfig,
             rng, device_rngs = jax.random.split(rng)
             device_rngs = shard_prng_key(device_rngs)
             (vqgan_state, disc_state), info = p_train_step(vqgan_state, disc_state, batch, device_rngs)
-            
             global_step = vqgan_state.step[0]
+            pbar.set_description(f'Epoch {epoch + 1}/{train_config.n_epochs} - Step {global_step}')
+            
             if global_step % train_config.log_freq == 0:
                 info = unreplicate_dict(info)
                 pbar.set_postfix({'loss': info['nll_loss'] + info['g_loss'],
                                   'd_loss': info['d_loss']})
                 
                 run.log(info, step=global_step)
-                pbar.set_description(pbar.desc + f' Step: {global_step}')
             
-            if global_step % train_config.img_log_freq == 0:
-                lpips_recon = load_lpips_fn(LPIPS if train_config.use_lpips else None, train_config.img_size, 3)
-                x_recon, recon_info = p_recon_step(vqgan_state, lpips_recon, sample_batch, device_rngs)
+            if global_step % train_config.img_log_freq == 0 or global_step == 1:
+                x_recon, recon_info = p_recon_step(vqgan_state, sample_batch, device_rngs)
                 x_recon = jax.device_get(x_recon).squeeze()
                 original = jax.device_get(sample_batch).squeeze()
                 recon_info = unreplicate_dict(recon_info)
@@ -232,15 +230,15 @@ def main(train_config: TrainConfig,
                     image.save(f'./recon_images/{epoch}_{global_step % len(train_loader)}.png')
                     run.log(recon_info, step=global_step)
 
-            if global_step % train_config.save_freq == 0:
+            if global_step % train_config.save_freq == 0 and global_step > 0:
                 name = f'{epoch}_{global_step % len(train_loader)}.ckpt'
                 save_state(vqgan_state, os.path.join(ckpt_path, 'vqgan_' + name), global_step)
                 save_state(disc_state, os.path.join(ckpt_path, 'disc_' + name), global_step)
 
-    save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_final.ckpt'), vqgan_state.step[0])
-    save_state(disc_state, os.path.join(ckpt_path, f'disc_final.ckpt'), disc_state.step[0])
-    print(f'Model saved ({epoch}, {global_step % len(train_loader)})')
-    run.finish()
+    # save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_final.ckpt'), vqgan_state.step[0])
+    # save_state(disc_state, os.path.join(ckpt_path, f'disc_final.ckpt'), disc_state.step[0])
+    # print(f'Model saved ({epoch}, {global_step % len(train_loader)})')
+    # run.finish()
 
 
 if __name__ == "__main__":
@@ -251,11 +249,11 @@ if __name__ == "__main__":
     train_config = TrainConfig(seed=0,
                                dataset='imagenet',
                                img_size=256,
-                               max_size = 10 * 4,
+                               max_size=5 * 4,
                                batch_size=4,
-                               num_workers=8,
-                               n_epochs=1000,
-                               log_freq=10,
+                               num_workers=0,
+                               n_epochs=50,
+                               log_freq=5,
                                img_log_freq=100,
                                save_freq=1000,
                                use_lpips=False,
@@ -273,10 +271,20 @@ if __name__ == "__main__":
                               disc_g_start=400,
                               disc_flip_end=800)
     
-    fake = False
-    if fake:
-        with fake_pmap_and_jit():
-            main(train_config, loss_config)
-    
-    else:
+    # fake = False
+    # if fake:
+    #     with fake_pmap_and_jit():
+    #         main(train_config, loss_config)
+    #
+    # else:
+    #     main(train_config, loss_config)
+
+    with Profile() as pr:
         main(train_config, loss_config)
+
+    stats = Stats(pr, stream=open('profile_stats.txt', 'w'))
+    stats.strip_dirs()
+    stats.sort_stats('cumulative')
+    stats.print_callers()
+    stats.dump_stats('profile_stats')
+    print('Profile stats saved')

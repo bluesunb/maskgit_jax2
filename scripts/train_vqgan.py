@@ -108,7 +108,7 @@ def train_step(vqgan_state: TrainState,
                     + log_gaussian_loss * config.log_gaussian_weight
                     + percept_loss * config.percept_weight)
 
-        nll_loss = nll_loss + q_loss * config.codebook_loss
+        nll_loss = nll_loss + q_loss * config.codebook_weight
         result.update({'percept_loss': percept_loss, 'q_loss': q_loss})
         return nll_loss, result
 
@@ -320,7 +320,7 @@ if __name__ == "__main__":
     recon_loss_weight = 1.0
     loss_config = LossWeights(disc_d_start=3000,
                               disc_g_start=3000,
-                              disc_d_flip=6000,
+                              disc_flip_end=6000,
                               adversarial_weight=0.5)
 
     # with fake_pmap_and_jit():

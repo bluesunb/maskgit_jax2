@@ -133,10 +133,10 @@ def train_step(vqgan_state: TrainState,
     return (vqgan_state, disc_state), result
 
 
-def reconstruct_image(vqgan_state: TrainState, 
-                      lpips_fn: callable,
+def reconstruct_image(vqgan_state: TrainState,
                       batch: jp.ndarray, 
-                      rng: jp.ndarray):
+                      rng: jp.ndarray,
+                      lpips_fn: callable):
     
     rng_names = {'vqgan': ('dropout', ), 'disc': ()}
     rngs_vq = make_rngs(rng, rng_names['vqgan'])

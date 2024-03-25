@@ -107,7 +107,7 @@ def train_step(vqgan_state: TrainState,
                     + log_gaussian_loss * config.log_gaussian_weight
                     + percept_loss * config.percept_weight)
 
-        nll_loss = nll_loss + q_loss * config.codebook_loss
+        nll_loss = nll_loss + q_loss * config.codebook_weight
         result.update({'percept_loss': percept_loss, 'q_loss': q_loss})
         return nll_loss, result
 
@@ -150,7 +150,7 @@ def train_step(vqgan_state: TrainState,
             loss_fake = jp.mean(jax.nn.softplus(logits_fake))
             return loss_real, loss_fake
 
-        flip_update = jp.logical_and(disc_state.step < config.disc_d_flip, jp.mod(disc_state.step, 3) == 0)
+        flip_update = jp.logical_and(disc_state.step < config.disc_flip_end, jp.mod(disc_state.step, 3) == 0)
         loss_real, loss_fake = jax.lax.cond(flip_update, positive_branch, negative_branch, (logits_real, logits_fake))
         disc_weight = jp.asarray(disc_state.step > config.disc_d_start, dtype=jp.float32)
         disc_loss = (loss_real + loss_fake) * 0.5 * disc_weight
@@ -336,7 +336,7 @@ if __name__ == "__main__":
     recon_loss_weight = 1.0
     loss_config = LossWeights(disc_d_start=3000,
                               disc_g_start=3000,
-                              disc_d_flip=6000,
+                              disc_flip_end=6000,
                               adversarial_weight=0.5)
 
     # with fake_pmap_and_jit():
