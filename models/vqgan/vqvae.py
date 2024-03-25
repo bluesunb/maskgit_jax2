@@ -75,9 +75,9 @@ class VQGAN(nn.Module):
     def __call__(self, x: jp.ndarray, train: bool = None):
         # quantized, loss, result = self.encode(x, train)
         train = nn.merge_param('training', self.training, train)
-        x_enc = self.encode(x)
-        quantized, loss, result = self.quantize(x_enc)
-        x_rec = self.decode(quantized)
+        x_enc = self.encode(x, train)
+        quantized, loss, result = self.quantize(x_enc, train)
+        x_rec = self.decode(quantized, train)
         return x_rec, loss, result
 
 

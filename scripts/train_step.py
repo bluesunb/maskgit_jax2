@@ -120,9 +120,8 @@ def train_step(vqgan_state: TrainState,
 
         result = jax.lax.pmean(result, axis_name=pmap_axis)
 
-    vqgan_state = vqgan_state.apply_gradients(nll_grads)
+    g_grads = jax.tree_map(lambda x, y: x + y, g_grads, nll_grads)
     vqgan_state = vqgan_state.apply_gradients(g_grads)
-    vqgan_state = vqgan_state.replace(step=vqgan_state.step - 1)
     disc_state = disc_state.apply_gradients(d_grads, extra_variables=updates)
 
     result.update({'nll_loss': nll_loss, 'g_loss': g_loss, 'd_loss': d_loss,

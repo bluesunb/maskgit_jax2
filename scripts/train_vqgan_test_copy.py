@@ -16,8 +16,8 @@ from utils.metrics import LPIPS
 from utils.dataset import load_folder_data, load_stl
 from config import VQConfig, AutoencoderConfig, LossWeights, TrainConfig
 from scripts.common import TrainState
-from scripts.train_step import train_step, reconstruct_image, make_rngs
-from utils.context import make_state, save_state
+from scripts.train_step import train_step, reconstruct_image
+from utils.context import make_state, save_state, make_rngs
 
 from datetime import datetime
 from functools import partial
@@ -137,19 +137,19 @@ def prepare_model(config: TrainConfig):
 class Logger:
     def __init__(self):
         self.log_dict = defaultdict(list)
+        self.steps = defaultdict(list)
 
     def log(self, info: dict, step: int):
-        flag = False
         for k, v in info.items():
             if hasattr(v, 'ndim') and v.ndim == 0:
                 self.log_dict[k].append(v.item())
-                flag |= True
+                self.steps[k].append(step)
             elif isinstance(v, Number):
                 self.log_dict[k].append(v)
-                flag |= True
+                self.steps[k].append(step)
 
-        if flag:
-            self.log_dict['step'].append(step)
+    def finish(self):
+        pass
 
 
 def main(train_config: TrainConfig,
@@ -188,8 +188,9 @@ def main(train_config: TrainConfig,
 
     rng = jax.random.PRNGKey(train_config.seed)
     pbar = tqdm(range(train_config.n_epochs))
+    global_step = 0
     for epoch in pbar:
-        for batch in train_loader:
+        for step, batch in enumerate(test_loader):
     # for epoch in range(train_config.n_epochs):
     #     pbar = tqdm(train_loader, desc=f'Epoch {epoch + 1}/{train_config.n_epochs}')
     #     for batch in pbar:
@@ -200,45 +201,58 @@ def main(train_config: TrainConfig,
             rng, device_rngs = jax.random.split(rng)
             device_rngs = shard_prng_key(device_rngs)
             (vqgan_state, disc_state), info = p_train_step(vqgan_state, disc_state, batch, device_rngs)
-            global_step = vqgan_state.step[0]
-            pbar.set_description(f'Epoch {epoch + 1}/{train_config.n_epochs} - Step {global_step}')
-            
+            # global_step = vqgan_state.step[0].item()
+            global_step += 1
+
             if global_step % train_config.log_freq == 0:
                 info = unreplicate_dict(info)
                 pbar.set_postfix({'loss': info['nll_loss'] + info['g_loss'],
                                   'd_loss': info['d_loss']})
-                
+
+                info = flax.traverse_util.flatten_dict(info, sep='/')
                 run.log(info, step=global_step)
-            
-            if global_step % train_config.img_log_freq == 0 or global_step == 1:
+                pbar.set_description(f'Epoch {epoch + 1}/{train_config.n_epochs} - Step {global_step}')
+
+            if global_step % train_config.img_log_freq == 0:
                 x_recon, recon_info = p_recon_step(vqgan_state, sample_batch, device_rngs)
                 x_recon = jax.device_get(x_recon).squeeze()
                 original = jax.device_get(sample_batch).squeeze()
-                recon_info = unreplicate_dict(recon_info)
+                # recon_info = unreplicate_dict(recon_info)
 
                 x_recon = np.concatenate(x_recon, axis=1)
                 original = np.concatenate(original, axis=1)
                 image = np.concatenate([original, x_recon], axis=0)
                 image = test_untransform(image)
                 image = Image.fromarray(image)
-                
+
                 if train_config.wandb_project:
                     run.log(recon_info, step=global_step)
                     run.log({'recon_image': wandb.Image(image)}, step=global_step)
                 else:
-                    os.makedirs('./recon_images', exist_ok=True)
-                    image.save(f'./recon_images/{epoch}_{global_step % len(train_loader)}.png')
+                    image.save(f'./recon_images/{epoch}_{step}.png')
                     run.log(recon_info, step=global_step)
 
             if global_step % train_config.save_freq == 0 and global_step > 0:
-                name = f'{epoch}_{global_step % len(train_loader)}.ckpt'
+                name = f'{epoch}_{step}.ckpt'
                 save_state(vqgan_state, os.path.join(ckpt_path, 'vqgan_' + name), global_step)
                 save_state(disc_state, os.path.join(ckpt_path, 'disc_' + name), global_step)
 
-    # save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_final.ckpt'), vqgan_state.step[0])
-    # save_state(disc_state, os.path.join(ckpt_path, f'disc_final.ckpt'), disc_state.step[0])
-    # print(f'Model saved ({epoch}, {global_step % len(train_loader)})')
-    # run.finish()
+    save_state(vqgan_state, os.path.join(ckpt_path, f'vqgan_final.ckpt'), vqgan_state.step[0])
+    save_state(disc_state, os.path.join(ckpt_path, f'disc_final.ckpt'), disc_state.step[0])
+    print(f'Model saved ({epoch}, {step})')
+    run.finish()
+
+    # n_logs = len(run.log_dict)
+    # r, c = int(n_logs ** 0.5), n_logs // int(n_logs ** 0.5)
+    # fig, axes = plt.subplots(r, c, figsize=(15, 10))
+    # for i, (k, v) in enumerate(run.log_dict.items()):
+    #     if k == 'step':
+    #         continue
+    #     axes[i // c, i % c].plot(v, run.steps[k])
+    #     axes[i // c, i % c].set_title(k)
+    #
+    # plt.tight_layout()
+    # plt.show()
 
 
 if __name__ == "__main__":
@@ -248,18 +262,18 @@ if __name__ == "__main__":
 
     train_config = TrainConfig(seed=0,
                                dataset='imagenet',
-                               img_size=256,
+                               img_size=96,
                                max_size=5 * 4,
                                batch_size=4,
                                num_workers=0,
-                               n_epochs=50,
-                               log_freq=5,
-                               img_log_freq=100,
+                               n_epochs=1000,
+                               log_freq=50,
+                               img_log_freq=200,
                                save_freq=1000,
                                use_lpips=False,
                                lr=2.25e-5,
                                weight_decay=1e-5,
-                               wandb_project="",
+                               wandb_project="maskgit_overfit",
                                root_dir=os.path.abspath('./'))
     
     loss_config = LossWeights(log_gaussian_weight=1.0,
@@ -267,9 +281,9 @@ if __name__ == "__main__":
                               percept_weight=0.1,
                               codebook_weight=1.0,
                               adversarial_weight=0.1,
-                              disc_d_start=400,
-                              disc_g_start=400,
-                              disc_flip_end=800)
+                              disc_d_start=1000,
+                              disc_g_start=1000,
+                              disc_flip_end=2000)
     
     # fake = False
     # if fake:
@@ -285,6 +299,6 @@ if __name__ == "__main__":
     stats = Stats(pr, stream=open('profile_stats.txt', 'w'))
     stats.strip_dirs()
     stats.sort_stats('cumulative')
-    stats.print_callers()
+    stats.print_stats()
     stats.dump_stats('profile_stats')
     print('Profile stats saved')
