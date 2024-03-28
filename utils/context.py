@@ -47,3 +47,25 @@ def make_state(rngs, model, tx, inputs, **kwargs):
                               extra_variables=variables)
 
     return state
+
+
+def unreplicate_dict(d):
+    return jax.tree_map(lambda x: jax.device_get(x[0]), d)
+
+
+class Logger:
+    def __init__(self):
+        self.log_dict = defaultdict(list)
+        self.steps = defaultdict(list)
+
+    def log(self, info: dict, step: int):
+        for k, v in info.items():
+            if hasattr(v, 'ndim') and v.ndim == 0:
+                self.log_dict[k].append(v.item())
+                self.steps[k].append(step)
+            elif isinstance(v, Number):
+                self.log_dict[k].append(v)
+                self.steps[k].append(step)
+
+    def finish(self):
+        pass

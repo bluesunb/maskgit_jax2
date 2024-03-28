@@ -76,19 +76,20 @@ class TransformerEncoder(nn.Module):
 
 class BidirectionalTransformer(nn.Module):
     config: TransformerConfig
-    n_tokens: int
+    # n_tokens: int   # length of the sequence consisting of tokens
 
     @nn.compact
     def __call__(self, x: jp.ndarray, train: bool = True):
         # assert_equal_shape(x.shape, (None, self.n_tokens + 1))
-        chex.assert_shape(x, (None, self.n_tokens + 1))
-        seq_len = self.n_tokens + 1
+        # chex.assert_shape(x, (None, self.n_tokens + 1))
+        # seq_len = self.n_tokens + 1
+        seq_len = x.shape[1]
         n_emb_tokens = self.config.codebook_size + 2
         emb_dim = self.config.emb_dim
         pos_embedding = self.param('pos_embedding', nn.initializers.truncated_normal(stddev=0.02), (seq_len, emb_dim))
 
         tok_emb = nn.Embed(n_emb_tokens, emb_dim, name='tok_embed')(x)
-        pos_emb = pos_embedding[:tok_emb.shape[1]]
+        pos_emb = pos_embedding[None, :tok_emb.shape[1]]
         x_emb = tok_emb + pos_emb
         x_emb = nn.Dropout(0.1)(x_emb, deterministic=not train)
 
@@ -101,7 +102,7 @@ class BidirectionalTransformer(nn.Module):
 
         bias = self.param('bias', nn.initializers.zeros, (seq_len, n_emb_tokens))
         logits = jp.matmul(x_emb, self.variables['params']['tok_embed']['embedding'].T) + bias
-        return logits  # (bs, seq_len, n_tokens)
+        return logits  # (bs, seq_len, n_emb_tokens)
 
 
 class TransformerEncoderBlock(nn.Module):
@@ -137,8 +138,8 @@ class BidirectionalTransformer2(nn.Module):
         x_emb = tok_emb + pos_emb
         x_emb = nn.Dropout(0.1)(x_emb, deterministic=not train)
 
-        for _ in range(self.config.n_layers):
-            x_emb = TransformerEncoder(self.config)(x_emb, train)
+        # for _ in range(self.config.n_layers):
+        #     x_emb = TransformerEncoder(self.config)(x_emb, train)
 
         scanTransformerEncoder = nn.scan(TransformerEncoderBlock,
                                          variable_axes={'params': 0}, variable_broadcast=False,
@@ -164,7 +165,7 @@ if __name__ == "__main__":
                                codebook_size=360)
 
     x = jax.random.randint(rng, (1, 25), 0, config.codebook_size + 1)
-    model = BidirectionalTransformer2(config, 24)
+    model = BidirectionalTransformer(config, 24)
     out, params = model.init_with_output({'params': rng, 'dropout': rng}, x, train=True)
     print(out.shape)
     # from easydict import EasyDict

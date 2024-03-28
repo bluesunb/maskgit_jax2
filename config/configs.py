@@ -26,9 +26,9 @@ class TransformerConfig:
     resid_pdrop: float = 0.1
     ff_pdrop: float = 0.1
 
-    # n_tokens: int = 24      # number of img tokens = seq_len
+    # n_img_tokens: int = 24      # number of img tokens = seq_len
     codebook_size: int = 1024   # codebook tokens = VQConfig.codebook_size
-    temperature: float = 4.5
+    sample_temperature: float = 4.5
     mask_scheme: str = "cosine"
 
 
@@ -78,6 +78,7 @@ class TrainConfig:
     lr: float = 1e-4
     betas: Tuple[float, float] = (0.5, 0.9)
     weight_decay: float = 1e-4
+    grad_accum: int = 1
 
     wandb_project: str = ""
     root_dir: str = ""
@@ -113,9 +114,10 @@ if __name__ == "__main__":
 
         @nn.compact
         def __call__(self, x):
+            y = nn.Dense(features=256)(x)
             for _ in range(self.n_layers):
                 h = nn.Dense(features=256)(x)
-                h = nn.relu(h)
+                h = nn.relu(h) + y
                 x = x + h
             return x
 
