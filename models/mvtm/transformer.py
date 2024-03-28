@@ -130,6 +130,7 @@ class VQGANTransformer(nn.Module):
         ids = jp.where(new_mask, self.mask_token_id, pred_ids)
         return ids
 
+    @partial(jax.jit, static_argnums=(2,))
     def log_images(self, x, schedule="cosine"):
         quantized, z_indices = self.encode_to_z(x)
         sampled_ids = self.sample_ids(z_indices, total_steps=11, schedule=schedule)
@@ -238,7 +239,8 @@ def inpainting(img: jp.ndarray,
     img = img * mask[..., None]
 
     rng, id_rng = jax.random.split(rng)
-    ids = jax.random.randint(id_rng, (1, 6, 6, 256), 0, codebook_size)
+    # ids = jax.random.randint(id_rng, (1, 6, 6, 256), 0, codebook_size)
+    ids = jax.random.randint(rng, (1, 256), 0, codebook_size)
 
     p = 16
     patched_mask = jax.lax.conv_general_dilated_patches(

@@ -7,9 +7,11 @@ import jax, jax.numpy as jp
 import flax, optax
 from flax.training.common_utils import shard, shard_prng_key
 
+import pickle
 import wandb
 from torchvision import transforms as T
 from tqdm import tqdm
+from PIL import Image
 
 from config import TransformerConfig, TrainConfig
 from models.mvtm.transformer import VQGANTransformer
@@ -75,7 +77,25 @@ def main(train_config: TrainConfig):
             device_rngs = shard_prng_key(device_rngs)
             trns_state, loss = p_train_step(trns_state, batch, device_rngs)
             global_step += 1
-
             pbar.set_postfix({'loss': loss})
 
+        x_recon, x_sample, x_new = trns_state(sample_batch, method='log_images')
+        image = np.concatenate([jax.device_get(x_new),
+                                jax.device_get(x_sample),
+                                jax.device_get(x_recon)], axis=0)
+        image = test_untransform(image)
+        image = Image.fromarray(image)
         
+        if train_config.wandb_project:
+            run.log({'recon_images': wandb.Image(image)}, step=global_step)
+        else:
+            image.save('./recon_images/trns_{epoch}.png')
+        
+        if train_config.save_freq == 0:
+            name = f'trns_{epoch}.ckpt'
+            save_state(trns_state, ckpt_path / name, global_step)
+        
+    save_state(trns_state, ckpt_path / 'trns_final.ckpt', global_step)
+    pickle.dump(trns_config, open(ckpt_path / 'trns_configs.pkl', 'wb'))
+    print(f"Model saved at {ckpt_path}")
+    run.finish()
