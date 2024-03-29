@@ -2,6 +2,7 @@ import os, shutil
 from pathlib import Path
 
 import numpy as np
+import matplotlib.pyplot as plt
 import jax
 import flax
 from flax.training.common_utils import shard, shard_prng_key
@@ -16,14 +17,11 @@ from utils.context import save_state, unreplicate_dict, Logger
 
 from datetime import datetime
 from functools import partial
-from numbers import Number
 
 import pickle
 from pprint import pprint
 from PIL import Image
 import matplotlib.pyplot as plt
-from collections import defaultdict
-
 
 
 def imshow(img):
@@ -62,8 +60,11 @@ def main(train_config: TrainConfig,
         sample_batch = sample_batch[0]
     sample_batch = shard(sample_batch[:4])
 
+    plt.imshow(np.concatenate(test_untransform(jax.device_get(sample_batch).squeeze()), axis=1))
+    plt.show()
+
     # ckpt_path = os.path.abspath('./checkpoints')
-    ckpt_path = Path(os.path.join(train_config.root_dir, 'checkpoints'))
+    ckpt_path: Path = Path(os.path.join(train_config.root_dir, 'checkpoints'))
     if train_config.wandb_project:
         wandb.init(project=train_config.wandb_project,
                    dir=train_config.root_dir,
@@ -118,13 +119,16 @@ def main(train_config: TrainConfig,
                     run.log(recon_info, step=global_step)
                     run.log({'recon_image': wandb.Image(image)}, step=global_step)
                 else:
-                    image.save(f'./recon_images/{epoch}_{step}.png')
+                    if not os.path.exists('./recon_images'):
+                        os.makedirs('./recon_images', exist_ok=True)
+                    name = f'{str(epoch).zfill(4)}_{str(step).zfill(4)}.png'
+                    image.save(f'./recon_images/{name}')
                     run.log(recon_info, step=global_step)
 
             if global_step % train_config.save_freq == 0 and global_step > 0:
                 name = f'{epoch}_{step}.ckpt'
-                save_state(vqgan_state, os.path.join(ckpt_path, 'vqgan_' + name), global_step)
-                save_state(disc_state, os.path.join(ckpt_path, 'disc_' + name), global_step)
+                save_state(vqgan_state, ckpt_path / f'vqgan_{name}', global_step)
+                save_state(disc_state, ckpt_path / f'disc_{name}', global_step)
 
     save_state(vqgan_state, ckpt_path / 'vqgan_final.ckpt', vqgan_state.step[0])
     save_state(disc_state, ckpt_path / 'disc_final.ckpt', disc_state.step[0])
@@ -133,6 +137,9 @@ def main(train_config: TrainConfig,
     disc_config = {k: v for k, v in disc_config.items() if not k.startswith('_')}
     pickle.dump(disc_config, open(ckpt_path / 'disc_configs.pkl', 'wb'))
     print(f'Model saved ({epoch}, {step})')
+
+    vqgan_state = flax.jax_utils.unreplicate(vqgan_state)
+    pickle.dump(vqgan_state.params, open(ckpt_path / 'vqgan_params.pkl', 'wb'))
     run.finish()
 
     # n_logs = len(run.log_dict)

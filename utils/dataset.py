@@ -42,7 +42,8 @@ def load_folder_data(path: str, batch_size: int, shuffle: bool = False, num_work
     # train_set = ImagePaths(path, transform=transform, max_size=max_size)
     train_set = dset.ImageFolder(path, transform=transform)
     if max_size:
-        train_set, _ = random_split(train_set, [max_size, len(train_set) - max_size])
+        g = th.Generator().manual_seed(42) if not shuffle else None
+        train_set, _ = random_split(train_set, [max_size, len(train_set) - max_size], generator=g)
     loader = DataLoader(train_set, batch_size=batch_size, shuffle=shuffle, collate_fn=numpy_collate,
                         drop_last=True, num_workers=num_workers)
     return loader

@@ -4,12 +4,13 @@ import jax.numpy as jp
 from scripts.common import TrainState
 from flax.training import train_state, checkpoints
 
+from pathlib import Path
 from collections import defaultdict
 from typing import Union, Sequence, Dict
 from numbers import Number
 
 
-def save_state(state: train_state.TrainState, path: str, step: int):
+def save_state(state: train_state.TrainState, path: Union[str, Path], step: int):
     if os.path.exists(path):
         shutil.rmtree(path)
     state = flax.jax_utils.unreplicate(state)
@@ -18,7 +19,7 @@ def save_state(state: train_state.TrainState, path: str, step: int):
     return state
 
 
-def load_state(path: str, state: train_state.TrainState) -> train_state.TrainState:
+def load_state(path: Union[str, Path], state: train_state.TrainState) -> train_state.TrainState:
     state_dict = checkpoints.restore_checkpoint(path, target=state)
     return state_dict
 

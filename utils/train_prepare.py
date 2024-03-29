@@ -41,7 +41,7 @@ def prepare_dataset(config: TrainConfig):
     if config.dataset == "imagenet":
         path = os.path.join(root_dir, "ILSVRC2012_img_test")
         train_loader = load_folder_data(path,
-                                        batch_size=batch_size, shuffle=True, num_workers=num_workers,
+                                        batch_size=batch_size, shuffle=False, num_workers=num_workers,
                                         transform=train_transform,
                                         max_size=config.max_size)
 
@@ -51,7 +51,7 @@ def prepare_dataset(config: TrainConfig):
                                        max_size=config.max_size)
 
     elif config.dataset == "stl":
-        train_loader = load_stl(root_dir, split='train+unlabeled', shuffle=True, batch_size=batch_size,
+        train_loader = load_stl(root_dir, split='train+unlabeled', shuffle=False, batch_size=batch_size,
                                 num_workers=num_workers)
         test_loader = load_stl(root_dir, split='test', shuffle=False, batch_size=batch_size, num_workers=num_workers)
 

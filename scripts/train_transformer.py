@@ -54,7 +54,7 @@ def main(train_config: TrainConfig):
     # sample_batch = sample_batch[:1]
     sample_batch = shard(sample_batch[:4])
 
-    ckpt_path = Path(os.path.join(train_config.root_dir, 'checkpoints'))
+    ckpt_path: Path = Path(os.path.join(train_config.root_dir, 'checkpoints'))
     if train_config.wandb_project:
         wandb.init(project=train_config.wandb_project,
                    dir=train_config.root_dir,
@@ -106,7 +106,7 @@ def main(train_config: TrainConfig):
         if epoch % train_config.save_freq == 0:
             name = f'trns_{epoch}.ckpt'
             save_state(trns_state, ckpt_path / name, global_step)
-        
+
     save_state(trns_state, ckpt_path / 'trns_final.ckpt', global_step)
     pickle.dump(trns_config, open(ckpt_path / 'trns_configs.pkl', 'wb'))
     print(f"Model saved at {ckpt_path}")
@@ -131,7 +131,7 @@ if __name__ == '__main__':
                                lr=1e-4,
                                grad_accum=10,
                                # root_dir=Path('./maskgit_jax2/scripts').absolute())
-                               root_dir=Path('./').absolute())
+                               root_dir='~/PycharmProjects/Repr_Learning/MaskGit/maskgit_jax2/saves')
 
     import chex
     with chex.fake_pmap_and_jit():
