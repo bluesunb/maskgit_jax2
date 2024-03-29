@@ -19,7 +19,7 @@ class TransformerConfig:
     # n_heads: int = 12
     n_heads: int = 12
     # n_layers: int = 24
-    n_layers: int = 3
+    n_layers: int = 12
     # intermediate_dim: int = 4 * 768
     intermediate_dim: int = 4 * 128
     attn_pdrop: float = 0.1

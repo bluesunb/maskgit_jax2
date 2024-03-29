@@ -1,16 +1,12 @@
 import os
-import math
-import numpy as np
 import jax, jax.numpy as jp
 import flax.linen as nn
-import optax
+import flax, optax
 
 from models.vqgan.vqvae import VQGAN
 from models.vqgan.codebook import vector_quantization
 from models.mvtm.bi_transformer import BidirectionalTransformer, BidirectionalTransformer2
 from config import TransformerConfig
-from scripts.common import TrainState
-from utils.context import load_state
 from functools import partial
 
 
@@ -27,9 +23,15 @@ def get_mask_schedule(mode="cosine"):
     raise NotImplementedError(f"Mask schedule mode {mode} not implemented")
 
 
+def stop_gradient(variables):
+    return jax.tree_map(lambda x: jax.lax.stop_gradient(x), variables)
+
+
 class VQGANTransformer(nn.Module):
     config: TransformerConfig
+    # vqgan: VQGAN
     vqgan: VQGAN
+    vqgan_params: dict
     training: bool = None
 
     def setup(self):
@@ -37,10 +39,14 @@ class VQGANTransformer(nn.Module):
         self.mask_token_id = self.config.codebook_size
         self.scheduler = get_mask_schedule(self.config.mask_scheme)
         self.transformer = BidirectionalTransformer(self.config)
+        # self.vqgan_params = jax.tree_map(lambda x: jax.lax.stop_gradient(x), self.vqgan_params)
+        # self.tmp = self.vqgan.variables['params']['codebook']['embedding']
 
     def encode_to_z(self, x: jp.ndarray, train: bool = True):
-        x_enc = self.vqgan.encode(x)
-        quantized, q_loss, result = self.vqgan.quantize(x_enc)
+        # x_enc = self.vqgan.encode(x)
+        x_enc = self.vqgan.apply(self.vqgan_params, x, method=self.vqgan.encode, train=False)
+        # quantized, q_loss, result = self.vqgan.quantize(x_enc)
+        quantized, q_loss, result = self.vqgan.apply(self.vqgan_params, x_enc, method=self.vqgan.quantize, train=False)
         indices = result["indices"]
         quantized = jax.lax.stop_gradient(quantized)
         indices = jax.lax.stop_gradient(indices)
@@ -56,11 +62,14 @@ class VQGANTransformer(nn.Module):
         mask_rng = self.make_rng('mask')
         n_mask_rng, mask_sample_rng = jax.random.split(mask_rng)
         n_indices = z_indices.shape[1]
-        n_leave = math.floor(jax.random.uniform(n_mask_rng, ()) * n_indices)
-        sample = jax.random.uniform(mask_sample_rng, z_indices.shape)
-        sample = sample.argsort(1)[:, :n_leave]
-        sample = jax.nn.one_hot(sample, n_indices).any(axis=1)      # where to leave the token (0: will be masked)
-        mask = jp.where(sample, True, False)
+        n_leave = self.scheduler(jax.random.uniform(n_mask_rng, ())) * n_indices
+        # sample = jax.random.uniform(mask_sample_rng, z_indices.shape)
+        # sample = sample.argsort(1)[:, :n_leave]
+        # sample = jax.nn.one_hot(sample, n_indices).any(axis=1)      # where to leave the token (0: will be masked)
+        sample = jp.broadcast_to(jp.arange(n_indices), z_indices.shape)
+        sample = jax.random.permutation(mask_sample_rng, sample, axis=-1)
+        mask = sample < n_leave
+        # mask = jp.where(sample, True, False)
 
         masked = mask * z_indices + (1 - mask) * self.mask_token_id
         masked = jp.concatenate([sos_tokens, masked], axis=1)   # [sos, z1, m2, ..., mn]
@@ -69,13 +78,13 @@ class VQGANTransformer(nn.Module):
         target = jp.concatenate([sos_tokens, z_indices], axis=1)    # [sos, z1, z2, ..., zn]
         return logits, target
 
-    def sample_ids(self,
+    def sample_ids_depr(self,
                    ids: jp.ndarray = None,
                    batch_size: int = None,
                    total_steps: int = 11,
                    schedule: str = 'cosine'):
 
-        n_img_tokens = self.variables['params']['transformer']['bias'].shape[0] - 1
+        n_img_tokens = self.variables['params']['transformer']['bias'].shape[-2] - 1
         if ids is None:
             ids = jp.ones((batch_size, n_img_tokens), dtype=jp.int32) * self.mask_token_id
         else:
@@ -96,17 +105,17 @@ class VQGANTransformer(nn.Module):
         return ids[..., 1:]
 
     def sample_forward(self,
-                       args,
+                    #    args,
+                       rng: jp.ndarray,
+                       ids: jp.ndarray,
                        t: int,
                        total_steps: int,
                        n_masks: jp.ndarray,
                        scheduler: callable):
 
-        rng, ids = args
-        rng, _ = jax.random.split(rng)
         pred_rng, noise_rng = jax.random.split(rng)
         logits = self.transformer(ids, train=False)      # (bs, seq_len, n_tokens = codebook + 2)
-        pred_ids = jax.random.categorical(rng, logits, axis=-1)     # (bs, seq_len)
+        pred_ids = jax.random.categorical(pred_rng, logits, axis=-1)     # (bs, seq_len)
 
         mask = (ids == self.mask_token_id)
         pred_ids = jp.where(mask, pred_ids, ids)  # fill predicted tokens to the masked positions
@@ -130,23 +139,29 @@ class VQGANTransformer(nn.Module):
         ids = jp.where(new_mask, self.mask_token_id, pred_ids)
         return ids
 
-    @partial(jax.jit, static_argnums=(2,))
+    # @partial(jax.jit, static_argnums=(2,))
     def log_images(self, x, schedule="cosine"):
         quantized, z_indices = self.encode_to_z(x)
+        z_indices_shape = z_indices.shape
+        z_indices = z_indices.reshape((x.shape[0], -1))
         sampled_ids = self.sample_ids(z_indices, total_steps=11, schedule=schedule)
-        x_new = self.ids_to_image(sampled_ids)
+        x_new = self.ids_to_image(sampled_ids.reshape(z_indices_shape))
 
         z_half_ids = z_indices[:, :z_indices.shape[1] // 2]
         half_sampled_ids = self.sample_ids(z_half_ids, total_steps=11, schedule=schedule)
-        x_sample = self.ids_to_image(half_sampled_ids)
+        x_sample = self.ids_to_image(half_sampled_ids.reshape(z_indices_shape))
 
+        z_indices = z_indices.reshape(z_indices_shape)
         x_recon = self.ids_to_image(z_indices)
         return x_recon, x_sample, x_new
 
     def ids_to_image(self, ids):
         encodings = jax.nn.one_hot(ids, self.config.codebook_size)
-        ids = vector_quantization(encodings, self.vqgan.codebook.get_codebook())
-        x_recon = self.vqgan.decode(ids)
+        # ids = vector_quantization(encodings, self.vqgan.codebook.get_codebook())
+        codebook = self.vqgan_params['params']['vq']['codebook']
+        ids = vector_quantization(encodings, codebook)
+        # x_recon = self.vqgan.decode(ids)
+        x_recon = self.vqgan.apply(self.vqgan_params, ids, method=self.vqgan.decode, train=False)
         return x_recon
     
     # def fill_mask_scan(self,
@@ -223,6 +238,62 @@ class VQGANTransformer(nn.Module):
 #     d = int(mask.shape[1] ** 0.5)
 #     mask = mask.reshape(d, d, *mask.shape[2:]).transpose(3, 4, 2, 0, 1)
 #     return mask.reshape(mask.shape[0] * mask.shape[1], -1)
+    
+    def sample_ids(self,
+                        ids: jp.ndarray = None,
+                        batch_size: int = None,
+                        total_steps: int = 11,
+                        schedule: str = 'cosine'):
+        
+        n_img_tokens = self.variables['params']['transformer']['bias'].shape[-2] - 1
+        if ids is None:
+            ids = jp.ones((batch_size, n_img_tokens), dtype=jp.int32) * self.mask_token_id
+        else:
+            ids = jp.concatenate([ids, jp.full((ids.shape[0], n_img_tokens - ids.shape[1]), self.mask_token_id)], axis=-1)
+        
+        sos_tokens = jp.ones((ids.shape[0], 1), dtype=jp.int32)
+        ids = jp.concatenate([sos_tokens, ids], axis=1)
+
+        n_masks = jp.sum(ids == self.mask_token_id, axis=-1)
+        scheduler = get_mask_schedule(schedule)
+
+        rng = self.make_rng('fill')
+        
+        def sample_forward(transformer, args, t, total_steps, n_masks, scheduler):
+            rng, inputs = args
+            pred_rng, noise_rng = jax.random.split(rng)
+            logits = transformer(inputs, train=False)      # (bs, seq_len, n_tokens = codebook + 2)
+            pred_ids = jax.random.categorical(pred_rng, logits, axis=-1)    # (bs, seq_len)
+
+            mask = (inputs == self.mask_token_id)
+            pred_ids = jp.where(mask, pred_ids, inputs)  # fill predicted tokens to the masked positions
+
+            r = (t + 1) / total_steps
+            mask_ratio = scheduler(r)
+
+            probs = jax.nn.softmax(logits, axis=-1)
+            pred_probs = jp.take_along_axis(probs, pred_ids[..., None], axis=-1)
+            pred_probs = jp.where(mask, pred_probs.squeeze(-1), 1e5)
+
+            new_n_masks = jp.floor(mask_ratio * n_masks).astype(jp.int32)
+            new_n_masks = jp.maximum(0, jp.minimum(new_n_masks, n_masks))[..., None]
+
+            temperature = self.config.sample_temperature * (1 - r)
+            confidence = jp.log(pred_probs) + jax.random.gumbel(noise_rng, pred_probs.shape) * temperature
+            cut_off = jp.sort(confidence, axis=-1)
+            cut_off = jp.take_along_axis(cut_off, new_n_masks, axis=-1)
+            new_mask = confidence < cut_off
+
+            ids = jp.where(new_mask, self.mask_token_id, pred_ids)
+            rng, _ = jax.random.split(rng)
+            return (rng, ids), t
+        
+        time_steps = jp.arange(total_steps)
+        (rng, ids), _ = nn.scan(partial(sample_forward, total_steps=total_steps, n_masks=n_masks, scheduler=scheduler), 
+                                variable_broadcast="params",
+                                split_rngs={"params": False})(self.transformer, (rng, ids), time_steps)
+        
+        return ids[..., 1:]
 
 
 def inpainting(img: jp.ndarray,
@@ -244,7 +315,7 @@ def inpainting(img: jp.ndarray,
 
     p = 16
     patched_mask = jax.lax.conv_general_dilated_patches(
-        mask[None, None, ...],
+        mask[None, None, ...].astype(jp.float32),
         filter_shape=(1, p, p),
         window_strides=(1, p, p),
         padding='valid'

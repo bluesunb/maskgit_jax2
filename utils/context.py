@@ -4,7 +4,9 @@ import jax.numpy as jp
 from scripts.common import TrainState
 from flax.training import train_state, checkpoints
 
+from collections import defaultdict
 from typing import Union, Sequence, Dict
+from numbers import Number
 
 
 def save_state(state: train_state.TrainState, path: str, step: int):
@@ -39,8 +41,14 @@ def make_rngs(rng: jp.ndarray,
     return {name: make_rngs(r, names[name], contain_params) for name, r in zip(names, rngs)}
 
 
-def make_state(rngs, model, tx, inputs, **kwargs):
+def make_state(rngs, model, tx, inputs, param_exclude=None, **kwargs):
     variables = jax.jit(model.init, static_argnames=['train'])(rngs, inputs, **kwargs)
+    # variables = model.init(rngs, inputs, **kwargs)
+    if param_exclude is not None:
+        for key in param_exclude:
+            if key in variables['params']:
+                variables['params'].pop(key)
+
     state = TrainState.create(model,
                               params=variables.pop('params'),
                               tx=tx,

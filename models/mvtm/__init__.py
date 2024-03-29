@@ -1,2 +1,2 @@
-from bi_transformer import BidirectionalTransformer
-from transformer import VQGANTransformer
+from .bi_transformer import BidirectionalTransformer
+from .transformer import VQGANTransformer

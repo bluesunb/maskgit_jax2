@@ -108,30 +108,32 @@ def load_lpips_fn(lpips_def: LPIPS = None, img_size: int = 256, channel: int = 3
 
 
 def prepare_transformer(config: TrainConfig, vq_path: Path):
-    vqgan_state = restore_checkpoint(vq_path)
-    vqgan_params = {'params': vqgan_state['params']}
-    if 'extra_variables' in vqgan_state:
-        vqgan_params.update(vqgan_state['extra_variables'])
+    # vqgan_state = restore_checkpoint(vq_path)
+    vqgan_params = pickle.load(open(vq_path, 'rb'))
+    # vqgan_params = {'params': vqgan_state['params']}
+    # if 'extra_variables' in vqgan_state:
+    #     vqgan_params.update(vqgan_state['extra_variables'])
     vq_configs = pickle.load(open(vq_path.parent / 'vq_configs.pkl', 'rb'))
     vqgan = VQGAN(enc_config=vq_configs['enc'],
                   dec_config=vq_configs['dec'],
                   vq_config=vq_configs['vq'],
                   training=False)
     
-    vqgan = vqgan.bind(vqgan_params)
+    # vqgan = vqgan.bind(vqgan_params)
 
     trns_config = TransformerConfig(emb_dim=128,
-                                    n_heads=12,
-                                    n_layers=3,
+                                    n_heads=8,
+                                    n_layers=12,
                                     intermediate_dim=4 * 128,
                                     attn_pdrop=0.1,
                                     resid_pdrop=0.1,
                                     ff_pdrop=0.1,
-                                    codebook_size=vq_configs.codebook_size,
-                                    sample_temperature=vq_configs.entropy_temperature,
+                                    codebook_size=vq_configs['vq'].codebook_size,
+                                    sample_temperature=vq_configs['vq'].entropy_temperature,
                                     mask_scheme="cosine")
 
-    transformer = VQGANTransformer(trns_config, vqgan)
+    transformer = VQGANTransformer(trns_config, vqgan, vqgan_params)
+    # transformer = VQGANTransformer(trns_config)
 
     scheduler = optax.cosine_onecycle_schedule(transition_steps=config.n_epochs * (config.max_size // config.batch_size),
                                                peak_value=config.lr,
@@ -140,15 +142,17 @@ def prepare_transformer(config: TrainConfig, vq_path: Path):
                                                final_div_factor=5.0)
     
     rng = jax.random.PRNGKey(config.seed)
-    tx = optax.chain(optax.zero_nans(),
-                     optax.adam(scheduler, b1=config.betas[0], b2=config.betas[1]))
+    # tx = optax.chain(optax.zero_nans(),
+    #                  optax.adam(scheduler, b1=config.betas[0], b2=config.betas[1]))
+    tx = optax.adam(scheduler, b1=config.betas[0], b2=config.betas[1])
     if config.grad_accum > 1:
         tx = optax.MultiSteps(tx, config.grad_accum)
+
     trns_state = make_state(rngs=make_rngs(rng, ('mask', 'dropout'), contain_params=True),
                             model=transformer,
-                            tx=optax.chain(optax.zero_nans(),
-                                           optax.adam(scheduler, b1=config.betas[0], b2=config.betas[1])),
-                            inputs=jp.empty((1, config.img_size, config.img_size, 3)), train=True)
+                            tx=tx,
+                            inputs=jp.empty((1, config.img_size, config.img_size, 3)),
+                            # param_exclude=('vqgan',),
+                            train=True)
     
-    return trns_state, transformer
-                                           
+    return trns_state, trns_config

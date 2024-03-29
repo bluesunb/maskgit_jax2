@@ -77,12 +77,12 @@ def main(train_config: TrainConfig,
 
     rng = jax.random.PRNGKey(train_config.seed)
     global_step = 0
-    # pbar = tqdm(range(train_config.n_epochs))
-    # for epoch in pbar:
-    #     for step, batch in enumerate(train_loader):
-    for epoch in range(train_config.n_epochs):
-        pbar = tqdm(enumerate(train_loader), desc=f'Epoch {epoch + 1}/{train_config.n_epochs}', total=len(train_loader))
-        for step, batch in pbar:
+    pbar = tqdm(range(train_config.n_epochs))
+    for epoch in pbar:
+        for step, batch in enumerate(train_loader):
+    # for epoch in range(train_config.n_epochs):
+    #     pbar = tqdm(enumerate(train_loader), desc=f'Epoch {epoch + 1}/{train_config.n_epochs}', total=len(train_loader))
+    #     for step, batch in pbar:
             if isinstance(batch, (list, tuple)):
                 batch = batch[0]
 
@@ -156,7 +156,7 @@ if __name__ == "__main__":
     train_config = TrainConfig(seed=0,
                                dataset='imagenet',
                                img_size=96,
-                               max_size=100 * 4,
+                               max_size=5 * 4,
                                batch_size=4,
                                num_workers=0,
                                n_epochs=1000,
@@ -178,20 +178,20 @@ if __name__ == "__main__":
                               disc_g_start=1000,
                               disc_flip_end=2000)
 
-    # fake = False
-    # if fake:
-    #     with fake_pmap_and_jit():
-    #         main(train_config, loss_config)
-    #
-    # else:
-    #     main(train_config, loss_config)
+    fake = False
+    if fake:
+        with fake_pmap_and_jit():
+            main(train_config, loss_config)
 
-    with Profile() as pr:
+    else:
         main(train_config, loss_config)
 
-    stats = Stats(pr, stream=open('profile_stats.txt', 'w'))
-    stats.strip_dirs()
-    stats.sort_stats('cumulative')
-    stats.print_stats()
-    stats.dump_stats('profile_stats')
-    print('Profile stats saved')
+    # with Profile() as pr:
+    #     main(train_config, loss_config)
+    #
+    # stats = Stats(pr, stream=open('profile_stats.txt', 'w'))
+    # stats.strip_dirs()
+    # stats.sort_stats('cumulative')
+    # stats.print_stats()
+    # stats.dump_stats('profile_stats')
+    # print('Profile stats saved')
