@@ -107,13 +107,13 @@ def load_lpips_fn(lpips_def: LPIPS = None, img_size: int = 256, channel: int = 3
     return lpips.__call__
 
 
-def prepare_transformer(config: TrainConfig, vq_path: Path):
+def prepare_transformer(config: TrainConfig, vq_param_path: Path, vq_config_path: Path):
     # vqgan_state = restore_checkpoint(vq_path)
-    vqgan_params = pickle.load(open(vq_path, 'rb'))
+    vqgan_params = pickle.load(open(vq_param_path, 'rb'))
     # vqgan_params = {'params': vqgan_state['params']}
     # if 'extra_variables' in vqgan_state:
     #     vqgan_params.update(vqgan_state['extra_variables'])
-    vq_configs = pickle.load(open(vq_path.parent / 'vq_configs.pkl', 'rb'))
+    vq_configs = pickle.load(open(vq_config_path, 'rb'))
     vqgan = VQGAN(enc_config=vq_configs['enc'],
                   dec_config=vq_configs['dec'],
                   vq_config=vq_configs['vq'],

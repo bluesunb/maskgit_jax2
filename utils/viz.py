@@ -17,14 +17,18 @@ def plot_to_img(run: wandb.run, tag: str, plot: plt.Figure, step: int):
     # img = th.from_numpy(img.setflags(write=True)).permute(2, 0, 1)
     # writer.add_image(tag, img, step)
     # plt.close(plot)
+    img = plot_to_array(plot)
+    run.log({tag: wandb.Image(img)}, step=step)
+    return img
+
+
+def plot_to_array(plot: plt.Figure):
     canvas = plt_backend_agg.FigureCanvasAgg(plot)
     canvas.draw()
     img = np.frombuffer(canvas.buffer_rgba(), dtype=np.uint8)
     w, h = plot.canvas.get_width_height()
     img = img.reshape([h, w, -1])
-    # img = th.from_numpy(img).permute(2, 0, 1)
     plt.close(plot)
-    run.log({tag: wandb.Image(img)}, step=step)
     return img
 
 

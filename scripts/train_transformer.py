@@ -18,6 +18,7 @@ from config import TransformerConfig, TrainConfig
 from scripts.common import TrainState
 from utils.context import make_rngs, unreplicate_dict, save_state, Logger
 from utils.train_prepare import prepare_dataset, prepare_transformer
+from utils.viz import array_to_heatmap
 
 
 def get_now_str():
@@ -30,18 +31,25 @@ def train_step(trns_state: TrainState, batch: jp.ndarray, rng: jp.ndarray, pmap_
 
     def loss_fn(params):
         logits, target = trns_state(batch, train=True, params=params, rngs=rngs)
-        return optax.softmax_cross_entropy_with_integer_labels(logits, target).mean()
+        loss_img = optax.softmax_cross_entropy_with_logits(logits, target)  # (bs, seq_len)
+        return loss_img.mean(), loss_img
     
-    loss, grad = jax.value_and_grad(loss_fn)(trns_state.params)
+    (loss, loss_img), grad = jax.value_and_grad(loss_fn, has_aux=True)(trns_state.params)
     grad = jax.lax.pmean(grad, axis_name=pmap_axis)
+    loss = jax.lax.pmean(loss, axis_name=pmap_axis)
+    loss_img = jax.lax.pmean(loss_img, axis_name=pmap_axis)
     trns_state = trns_state.apply_gradients(grad)
-    return trns_state, loss
+    return trns_state, (loss, loss_img)
 
 
 def main(train_config: TrainConfig):
-    ckpt_path = Path(os.path.join(train_config.root_dir, 'checkpoints'))
+    root_dir = Path(train_config.root_dir).absolute()
+    save_path = root_dir / 'saves'
+
     train_loader, test_loader, test_untransform = prepare_dataset(train_config)
-    trns_state, trns_config = prepare_transformer(train_config, vq_path=ckpt_path / 'vqgan_params.pkl')
+    trns_state, trns_config = prepare_transformer(train_config,
+                                                  vq_param_path=save_path / 'vqgan_params.pkl',
+                                                  vq_config_path=save_path / 'vq_configs.pkl')
 
     axis_name = 'batch'
     p_train_step = jax.pmap(partial(train_step, pmap_axis=axis_name), axis_name=axis_name)
@@ -54,13 +62,12 @@ def main(train_config: TrainConfig):
     # sample_batch = sample_batch[:1]
     sample_batch = shard(sample_batch[:4])
 
-    ckpt_path: Path = Path(os.path.join(train_config.root_dir, 'checkpoints'))
     if train_config.wandb_project:
         wandb.init(project=train_config.wandb_project,
                    dir=train_config.root_dir,
                    name=f"vqgan-{get_now_str()}",
                    config={'train_config': train_config, **trns_config})
-        wandb.run.config.update({'ckpt_path': ckpt_path})
+        wandb.run.config.update({'ckpt_path': save_path})
         run = wandb.run
     else:
         run = Logger()
@@ -70,7 +77,7 @@ def main(train_config: TrainConfig):
 
     pbar = tqdm(range(train_config.n_epochs))
     for epoch in pbar:
-        for step, batch in enumerate(train_loader):
+        for step, batch in enumerate(test_loader):
     # for epoch in range(train_config.n_epochs):
         # pbar = tqdm(enumerate(train_loader), desc=f'Epoch {epoch + 1}/{train_config.n_epochs}', total=len(train_loader))
         # for step, batch in pbar:
@@ -80,7 +87,7 @@ def main(train_config: TrainConfig):
             batch = shard(batch)
             rng, device_rngs = jax.random.split(rng)
             device_rngs = shard_prng_key(device_rngs)
-            trns_state, loss = p_train_step(trns_state, batch, device_rngs)
+            trns_state, (loss, loss_img) = p_train_step(trns_state, batch, device_rngs)
             global_step += 1
             pbar.set_postfix({'loss': loss[0]})
 
@@ -99,17 +106,19 @@ def main(train_config: TrainConfig):
 
             if train_config.wandb_project:
                 run.log({'recon_images': wandb.Image(image)}, step=global_step)
+                array_to_heatmap(run, 'loss_img', jax.device_get(loss_img[0, 0]), step=global_step)
             else:
                 # image.save('./recon_images/trns_{epoch}.png')
-                image.save(f'./maskgit_jax2/scripts/recon_images/trns_{epoch}.png')
+                name = f'trns_{str(epoch).zfill(4)}.png'
+                image.save(save_path / 'recon_images' / name)
 
         if epoch % train_config.save_freq == 0:
             name = f'trns_{epoch}.ckpt'
-            save_state(trns_state, ckpt_path / name, global_step)
+            save_state(trns_state, save_path / name, global_step)
 
-    save_state(trns_state, ckpt_path / 'trns_final.ckpt', global_step)
-    pickle.dump(trns_config, open(ckpt_path / 'trns_configs.pkl', 'wb'))
-    print(f"Model saved at {ckpt_path}")
+    save_state(trns_state, save_path / 'trns_final.ckpt', global_step)
+    pickle.dump(trns_config, open(save_path / 'trns_configs.pkl', 'wb'))
+    print(f"Model saved at {save_path}")
     run.finish()
 
     import matplotlib.pyplot as plt
@@ -117,6 +126,10 @@ def main(train_config: TrainConfig):
 
 
 if __name__ == '__main__':
+    root_dir = Path(os.path.abspath('./'))
+    if os.path.exists(os.path.join(root_dir, 'train_step.py')):
+        root_dir = root_dir.parent
+
     train_config = TrainConfig(seed=0,
                                dataset='imagenet',
                                img_size=128,
@@ -131,7 +144,7 @@ if __name__ == '__main__':
                                lr=1e-4,
                                grad_accum=10,
                                # root_dir=Path('./maskgit_jax2/scripts').absolute())
-                               root_dir='~/PycharmProjects/Repr_Learning/MaskGit/maskgit_jax2/saves')
+                               root_dir=str(root_dir))
 
     import chex
     with chex.fake_pmap_and_jit():

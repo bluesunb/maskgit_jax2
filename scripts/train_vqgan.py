@@ -63,15 +63,15 @@ def main(train_config: TrainConfig,
     plt.imshow(np.concatenate(test_untransform(jax.device_get(sample_batch).squeeze()), axis=1))
     plt.show()
 
-    # ckpt_path = os.path.abspath('./checkpoints')
-    ckpt_path: Path = Path(os.path.join(train_config.root_dir, 'checkpoints'))
+    root_dir = Path(train_config.root_dir).absolute()
+    save_path: Path = root_dir / 'saves'
     if train_config.wandb_project:
         wandb.init(project=train_config.wandb_project,
                    dir=train_config.root_dir,
                    name=f"vqgan-{get_now_str()}",
                    config={'train_config': train_config, 'loss_config': loss_config, **vq_configs})
 
-        wandb.run.config.update({'ckpt_path': ckpt_path})
+        wandb.run.config.update({'ckpt_path': save_path})
         run = wandb.run
     else:
         run = Logger()
@@ -80,7 +80,7 @@ def main(train_config: TrainConfig,
     global_step = 0
     pbar = tqdm(range(train_config.n_epochs))
     for epoch in pbar:
-        for step, batch in enumerate(train_loader):
+        for step, batch in enumerate(test_loader):
     # for epoch in range(train_config.n_epochs):
     #     pbar = tqdm(enumerate(train_loader), desc=f'Epoch {epoch + 1}/{train_config.n_epochs}', total=len(train_loader))
     #     for step, batch in pbar:
@@ -119,27 +119,29 @@ def main(train_config: TrainConfig,
                     run.log(recon_info, step=global_step)
                     run.log({'recon_image': wandb.Image(image)}, step=global_step)
                 else:
-                    if not os.path.exists('./recon_images'):
-                        os.makedirs('./recon_images', exist_ok=True)
+                    # if not os.path.exists('./recon_images'):
+                    #     os.makedirs('./recon_images', exist_ok=True)
                     name = f'{str(epoch).zfill(4)}_{str(step).zfill(4)}.png'
-                    image.save(f'./recon_images/{name}')
+                    # image.save(f'./recon_images/{name}')
+                    image.save(save_path / 'recon_images' / name)
                     run.log(recon_info, step=global_step)
 
             if global_step % train_config.save_freq == 0 and global_step > 0:
-                name = f'{epoch}_{step}.ckpt'
-                save_state(vqgan_state, ckpt_path / f'vqgan_{name}', global_step)
-                save_state(disc_state, ckpt_path / f'disc_{name}', global_step)
+                name = f'{str(epoch).zfill(4)}_{str(step).zfill(4)}.ckpt'
+                save_state(vqgan_state, save_path / f'vqgan_{name}', global_step)
+                save_state(disc_state, save_path / f'disc_{name}', global_step)
 
-    save_state(vqgan_state, ckpt_path / 'vqgan_final.ckpt', vqgan_state.step[0])
-    save_state(disc_state, ckpt_path / 'disc_final.ckpt', disc_state.step[0])
-    pickle.dump(vq_configs, open(ckpt_path / 'vq_configs.pkl', 'wb'))
+    save_state(vqgan_state, save_path / 'vqgan_final.ckpt', vqgan_state.step[0])
+    save_state(disc_state, save_path / 'disc_final.ckpt', disc_state.step[0])
+    pickle.dump(vq_configs, open(save_path / 'vq_configs.pkl', 'wb'))
     disc_config = disc_state.model_def.__dict__
     disc_config = {k: v for k, v in disc_config.items() if not k.startswith('_')}
-    pickle.dump(disc_config, open(ckpt_path / 'disc_configs.pkl', 'wb'))
+    pickle.dump(disc_config, open(save_path / 'disc_configs.pkl', 'wb'))
     print(f'Model saved ({epoch}, {step})')
 
     vqgan_state = flax.jax_utils.unreplicate(vqgan_state)
-    pickle.dump(vqgan_state.params, open(ckpt_path / 'vqgan_params.pkl', 'wb'))
+    pickle.dump({'params': vqgan_state.params, **vqgan_state.extra_variables},
+                open(save_path / 'vqgan_params.pkl', 'wb'))
     run.finish()
 
     # n_logs = len(run.log_dict)
@@ -160,6 +162,10 @@ if __name__ == "__main__":
     from cProfile import Profile
     from pstats import Stats
 
+    root_dir = Path(os.path.abspath('./'))
+    if os.path.exists(os.path.join(root_dir, 'train_step.py')):
+        root_dir = root_dir.parent
+
     train_config = TrainConfig(seed=0,
                                dataset='imagenet',
                                img_size=96,
@@ -174,7 +180,7 @@ if __name__ == "__main__":
                                lr=2.25e-5,
                                weight_decay=1e-5,
                                wandb_project="",
-                               root_dir=os.path.abspath('./'))
+                               root_dir=str(root_dir))
 
     loss_config = LossWeights(log_gaussian_weight=1.0,
                               log_laplace_weight=0.0,
