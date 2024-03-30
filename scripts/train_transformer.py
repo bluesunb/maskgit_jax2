@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import datetime
 
 import numpy as np
+import matplotlib.pyplot as plt
 import jax, jax.numpy as jp
 import flax, optax, chex
 from flax.training.common_utils import shard, shard_prng_key
@@ -18,7 +19,7 @@ from config import TransformerConfig, TrainConfig
 from scripts.common import TrainState
 from utils.context import make_rngs, unreplicate_dict, save_state, Logger
 from utils.train_prepare import prepare_dataset, prepare_transformer
-from utils.viz import array_to_heatmap
+from utils.viz import array_to_heatmap, plot_to_array
 
 
 def get_now_str():
@@ -31,7 +32,8 @@ def train_step(trns_state: TrainState, batch: jp.ndarray, rng: jp.ndarray, pmap_
 
     def loss_fn(params):
         logits, target = trns_state(batch, train=True, params=params, rngs=rngs)
-        loss_img = optax.softmax_cross_entropy_with_logits(logits, target)  # (bs, seq_len)
+        # loss_img = optax.softmax_cross_entropy_with_logits(logits, target)  # (bs, seq_len)
+        loss_img = optax.softmax_cross_entropy_with_integer_labels(logits, target)  # (bs, seq_len)
         return loss_img.mean(), loss_img
     
     (loss, loss_img), grad = jax.value_and_grad(loss_fn, has_aux=True)(trns_state.params)
@@ -94,10 +96,8 @@ def main(train_config: TrainConfig):
             run.log(unreplicate_dict({'loss': loss}), global_step)
 
         if epoch % train_config.img_log_freq == 0:
-            # call_fn = partial(flax.jax_utils.unreplicate(trns_state).__call__, method='log_images')
-            # x_recon, x_sample, x_new = jax.jit(call_fn)(sample_batch, rngs={'fill': rng})
-               # x_recon, x_sample, x_new = trns_state(sample_batch, method='log_images')
             x_recon, x_sample, x_new = p_log_images(sample_batch, rngs={'fill': shard_prng_key(rng)})
+            # x_recon, x_sample, x_new = flax.jax_utils.unreplicate(trns_state)(sample_batch[0], method='log_images', rngs={'fill': rng})
             image = np.concatenate([jax.device_get(x_new[0, 0]),
                                     jax.device_get(x_sample[0, 0]),
                                     jax.device_get(x_recon[0, 0])], axis=-2)
@@ -109,8 +109,14 @@ def main(train_config: TrainConfig):
                 array_to_heatmap(run, 'loss_img', jax.device_get(loss_img[0, 0]), step=global_step)
             else:
                 # image.save('./recon_images/trns_{epoch}.png')
-                name = f'trns_{str(epoch).zfill(4)}.png'
-                image.save(save_path / 'recon_images' / name)
+                name = f'{str(epoch).zfill(4)}.png'
+                image.save(save_path / 'recon_images' / f'trns_recon_{name}')
+
+                fig, axes = plt.subplots()
+                plt.pcolormesh(jax.device_get(loss_img.mean(axis=(0, 1), keepdims=True)[0]))
+                img = plot_to_array(fig)
+                img = Image.fromarray(img.astype(np.uint8))
+                img.save(save_path / 'recon_images' / f'trns_loss_{name}')
 
         if epoch % train_config.save_freq == 0:
             name = f'trns_{epoch}.ckpt'
@@ -121,8 +127,8 @@ def main(train_config: TrainConfig):
     print(f"Model saved at {save_path}")
     run.finish()
 
-    import matplotlib.pyplot as plt
     plt.plot(run.log_dict['loss'])
+    plt.show()
 
 
 if __name__ == '__main__':
@@ -136,17 +142,17 @@ if __name__ == '__main__':
                                max_size=5 * 4,
                                batch_size=4,
                                num_workers=0,
-                               n_epochs=100,
+                               n_epochs=200,
                                log_freq=1,
-                               img_log_freq=10,
-                               save_freq=50,
+                               img_log_freq=50,
+                               save_freq=100,
                                use_lpips=False,
                                lr=1e-4,
                                grad_accum=10,
                                # root_dir=Path('./maskgit_jax2/scripts').absolute())
                                root_dir=str(root_dir))
 
-    import chex
-    with chex.fake_pmap_and_jit():
-        main(train_config)
-    # main(train_config)
+    # import chex
+    # with chex.fake_pmap_and_jit():
+    #     main(train_config)
+    main(train_config)

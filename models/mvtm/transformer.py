@@ -9,6 +9,8 @@ from models.mvtm.bi_transformer import BidirectionalTransformer, BidirectionalTr
 from config import TransformerConfig
 from functools import partial
 
+import chex
+
 
 def get_mask_schedule(mode="cosine"):
     if mode == "linear":
@@ -67,7 +69,7 @@ class VQGANTransformer(nn.Module):
         # sample = sample.argsort(1)[:, :n_leave]
         # sample = jax.nn.one_hot(sample, n_indices).any(axis=1)      # where to leave the token (0: will be masked)
         sample = jp.broadcast_to(jp.arange(n_indices), z_indices.shape)
-        sample = jax.random.permutation(mask_sample_rng, sample, axis=-1)
+        sample = jax.random.permutation(mask_sample_rng, sample, axis=-1, independent=True)
         mask = sample < n_leave
         # mask = jp.where(sample, True, False)
 
@@ -251,7 +253,7 @@ class VQGANTransformer(nn.Module):
         else:
             ids = jp.concatenate([ids, jp.full((ids.shape[0], n_img_tokens - ids.shape[1]), self.mask_token_id)], axis=-1)
         
-        sos_tokens = jp.ones((ids.shape[0], 1), dtype=jp.int32)
+        sos_tokens = jp.ones((ids.shape[0], 1), dtype=jp.int32) * self.sos_token
         ids = jp.concatenate([sos_tokens, ids], axis=1)
 
         n_masks = jp.sum(ids == self.mask_token_id, axis=-1)
@@ -273,7 +275,7 @@ class VQGANTransformer(nn.Module):
 
             probs = jax.nn.softmax(logits, axis=-1)
             pred_probs = jp.take_along_axis(probs, pred_ids[..., None], axis=-1)
-            pred_probs = jp.where(mask, pred_probs.squeeze(-1), 1e5)
+            pred_probs = jp.where(mask, pred_probs.squeeze(-1), 1e5)    # set deterministic (high confidence) where not masked
 
             new_n_masks = jp.floor(mask_ratio * n_masks).astype(jp.int32)
             new_n_masks = jp.maximum(0, jp.minimum(new_n_masks, n_masks))[..., None]
@@ -287,11 +289,14 @@ class VQGANTransformer(nn.Module):
             ids = jp.where(new_mask, self.mask_token_id, pred_ids)
             rng, _ = jax.random.split(rng)
             return (rng, ids), t
-        
+
         time_steps = jp.arange(total_steps)
-        (rng, ids), _ = nn.scan(partial(sample_forward, total_steps=total_steps, n_masks=n_masks, scheduler=scheduler), 
+        (rng, ids), _ = nn.scan(partial(sample_forward, total_steps=total_steps, n_masks=n_masks, scheduler=scheduler),
                                 variable_broadcast="params",
                                 split_rngs={"params": False})(self.transformer, (rng, ids), time_steps)
+
+        # for t in time_steps:
+        #     (rng, ids), _ = sample_forward(self.transformer, (rng, ids), t, total_steps, n_masks, scheduler)
         
         return ids[..., 1:]
 
