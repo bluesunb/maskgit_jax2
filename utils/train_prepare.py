@@ -123,7 +123,8 @@ def prepare_transformer(config: TrainConfig, vq_param_path: Path, vq_config_path
 
     trns_config = TransformerConfig(emb_dim=128,
                                     n_heads=8,
-                                    n_layers=12,
+                                    # n_layers=12,
+                                    n_layers=4,
                                     intermediate_dim=4 * 128,
                                     attn_pdrop=0.1,
                                     resid_pdrop=0.1,
@@ -155,4 +156,4 @@ def prepare_transformer(config: TrainConfig, vq_param_path: Path, vq_config_path
                             # param_exclude=('vqgan',),
                             train=True)
     
-    return trns_state, trns_config
+    return trns_state, trns_config, scheduler

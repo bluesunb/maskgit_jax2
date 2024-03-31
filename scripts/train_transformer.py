@@ -49,9 +49,9 @@ def main(train_config: TrainConfig):
     save_path = root_dir / 'saves'
 
     train_loader, test_loader, test_untransform = prepare_dataset(train_config)
-    trns_state, trns_config = prepare_transformer(train_config,
-                                                  vq_param_path=save_path / 'vqgan_params.pkl',
-                                                  vq_config_path=save_path / 'vq_configs.pkl')
+    trns_state, trns_config, scheduler = prepare_transformer(train_config,
+                                                             vq_param_path=save_path / 'vqgan_params.pkl',
+                                                             vq_config_path=save_path / 'vq_configs.pkl')
 
     axis_name = 'batch'
     p_train_step = jax.pmap(partial(train_step, pmap_axis=axis_name), axis_name=axis_name)
@@ -93,7 +93,7 @@ def main(train_config: TrainConfig):
             global_step += 1
             pbar.set_postfix({'loss': loss[0]})
 
-            run.log(unreplicate_dict({'loss': loss}), global_step)
+            run.log(unreplicate_dict({'loss': loss, 'lr': scheduler(trns_state.step)}), global_step)
 
         if epoch % train_config.img_log_freq == 0:
             x_recon, x_sample, x_new = p_log_images(sample_batch, rngs={'fill': shard_prng_key(rng)})
@@ -128,6 +128,8 @@ def main(train_config: TrainConfig):
     run.finish()
 
     plt.plot(run.log_dict['loss'])
+    plt.twinx()
+    plt.plot(run.log_dict['lr'], c='C1')
     plt.show()
 
 
@@ -138,17 +140,18 @@ if __name__ == '__main__':
 
     train_config = TrainConfig(seed=0,
                                dataset='imagenet',
-                               img_size=128,
+                               img_size=96,
                                max_size=5 * 4,
                                batch_size=4,
                                num_workers=0,
-                               n_epochs=200,
+                               n_epochs=1000,
                                log_freq=1,
                                img_log_freq=50,
-                               save_freq=100,
+                               save_freq=250,
                                use_lpips=False,
+                            #    lr=1e-4,
                                lr=1e-4,
-                               grad_accum=10,
+                               grad_accum=1,
                                # root_dir=Path('./maskgit_jax2/scripts').absolute())
                                root_dir=str(root_dir))
 
