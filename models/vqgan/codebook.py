@@ -97,7 +97,7 @@ class VectorQuantizer(nn.Module):
             if self.config.entropy_loss_weight > 0:
                 entropy_loss = calc_entropy_loss(-distances, temperature=self.config.entropy_temperature)
                 entropy_loss = entropy_loss * self.config.entropy_loss_weight
-            
+
             loss = codebook_loss + commit_loss + entropy_loss
             quantized = x + jax.lax.stop_gradient(quantized - x)
             result.update({'vq_loss': loss, 'commit_loss': commit_loss, 'codebook_loss': codebook_loss, 'entropy_loss': entropy_loss})
@@ -135,3 +135,40 @@ class GumbelVQ(nn.Module):
     
     def get_codebook(self):
         return self.variables['params']['codebook'].astype(self.dtype)
+
+
+if __name__ == "__main__":
+    rng = jax.random.PRNGKey(0)
+    x = jax.random.randint(rng, (1, 24), 0, 512)
+
+    config = VQConfig(codebook_size=512)
+
+    class Net(nn.Module):
+        @nn.compact
+        def __call__(self, x: jp.ndarray):
+            x = nn.Embed(512, 128)(x)
+            # quantized, result = VectorQuantizer(config)(x, train=True)
+            x = x.reshape((-1, x.shape[-1]))
+            codebook = self.param('codebook', nn.initializers.uniform(), (512, 128))
+            distances = jp.linalg.norm(jp.expand_dims(x, axis=1) - jp.expand_dims(codebook, axis=0), axis=-1)
+            # indices = jp.argmin(distances, axis=-1)
+            # quantized = jp.take(codebook, indices, axis=0)
+            # return quantized, indices
+            return jax.nn.softmax(-distances, axis=-1)
+
+
+    net = Net()
+    params = net.init(rng, x)
+
+
+    def loss_fn(params, x):
+        # quantized, ids = net.apply(params, x)
+        probs = net.apply(params, x)[None]
+        orig_probs = jax.nn.one_hot(x, 512, dtype=jp.float32)
+        return optax.l2_loss(orig_probs, probs).mean()
+        # return quantized.mean()
+
+
+    grad_fn = jax.value_and_grad(loss_fn)
+    loss, grads = grad_fn(params, x)
+    print(loss)

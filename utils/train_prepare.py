@@ -9,7 +9,7 @@ from torchvision import transforms as T
 from models.vqgan import VQGAN, Discriminator
 from models.mvtm import VQGANTransformer
 from config import VQConfig, AutoencoderConfig, TrainConfig, TransformerConfig
-from utils.dataset import load_folder_data, load_stl
+from utils.dataset import load_folder_data, load_stl, load_cifar
 from utils.context import make_rngs, make_state
 from utils.metrics import LPIPS
 
@@ -54,6 +54,13 @@ def prepare_dataset(config: TrainConfig):
         train_loader = load_stl(root_dir, split='train+unlabeled', shuffle=False, batch_size=batch_size,
                                 num_workers=num_workers)
         test_loader = load_stl(root_dir, split='test', shuffle=False, batch_size=batch_size, num_workers=num_workers)
+
+    elif config.dataset == "cifar":
+        train_loader = load_cifar(root_dir, split='train', shuffle=True, batch_size=batch_size, num_workers=num_workers)
+        test_loader = load_cifar(root_dir, split='test', shuffle=False, batch_size=batch_size, num_workers=num_workers)
+
+    else:
+        raise ValueError(f"Unknown dataset: {config.dataset}")
 
     return train_loader, test_loader, test_untransform
 

@@ -66,6 +66,23 @@ def load_stl(data_dir, split, batch_size, shuffle=False, num_workers=0, transfor
     return loader
 
 
+def load_cifar(data_dir, split, batch_size, shuffle=False, num_workers=0, transform=None):
+    if transform is None:
+        if split == 'train':
+            transform = T.Compose([T.Resize(32),
+                                   T.RandomHorizontalFlip(),
+                                   T.ToTensor(),
+                                   T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+        else:
+            transform = T.Compose([T.Resize(32),
+                                   T.ToTensor(),
+                                   T.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+
+    train_set = dset.CIFAR10(data_dir, train=split == 'train', transform=transform, download=False)
+    loader = DataLoader(train_set, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, collate_fn=numpy_collate, drop_last=True)
+    return loader
+
+
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
     from time import time

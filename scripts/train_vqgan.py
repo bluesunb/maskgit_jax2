@@ -78,12 +78,12 @@ def main(train_config: TrainConfig,
 
     rng = jax.random.PRNGKey(train_config.seed)
     global_step = 0
-    pbar = tqdm(range(train_config.n_epochs))
-    for epoch in pbar:
-        for step, batch in enumerate(test_loader):
-    # for epoch in range(train_config.n_epochs):
-    #     pbar = tqdm(enumerate(train_loader), desc=f'Epoch {epoch + 1}/{train_config.n_epochs}', total=len(train_loader))
-    #     for step, batch in pbar:
+    # pbar = tqdm(range(train_config.n_epochs))
+    # for epoch in pbar:
+    #     for step, batch in enumerate(test_loader):
+    for epoch in range(train_config.n_epochs):
+        pbar = tqdm(enumerate(train_loader), desc=f'Epoch {epoch + 1}/{train_config.n_epochs}', total=len(train_loader))
+        for step, batch in pbar:
             if isinstance(batch, (list, tuple)):
                 batch = batch[0]
 
@@ -167,19 +167,19 @@ if __name__ == "__main__":
         root_dir = root_dir.parent
 
     train_config = TrainConfig(seed=0,
-                               dataset='imagenet',
-                               img_size=96,
-                               max_size=5 * 4,
-                               batch_size=4,
-                               num_workers=0,
-                               n_epochs=1000,
+                               dataset='cifar',
+                               img_size=32,
+                               max_size=50 * 4,
+                               batch_size=256,
+                               num_workers=12,
+                               n_epochs=50,
                                log_freq=50,
                                img_log_freq=200,
                                save_freq=1000,
                                use_lpips=False,
                                lr=2.25e-5,
                                weight_decay=1e-5,
-                               wandb_project="",
+                               wandb_project="maskgit_cifar",
                                root_dir=str(root_dir))
 
     loss_config = LossWeights(log_gaussian_weight=1.0,
@@ -187,9 +187,9 @@ if __name__ == "__main__":
                               percept_weight=0.1,
                               codebook_weight=1.0,
                               adversarial_weight=0.1,
-                              disc_d_start=1000,
-                              disc_g_start=1000,
-                              disc_flip_end=2000)
+                              disc_d_start=3000,
+                              disc_g_start=3000,
+                              disc_flip_end=5000)
 
     fake = False
     if fake:

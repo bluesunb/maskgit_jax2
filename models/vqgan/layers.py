@@ -63,7 +63,7 @@ class Attention(nn.Module):
     @nn.compact
     def __call__(self, x: jp.ndarray):
         out = nn.GroupNorm(num_groups=32, epsilon=1e-6)(x)
-        qkv = nn.Conv(3 * x.shape[-1], (1, 1), padding="VALId", use_bias=False)(out)
+        qkv = nn.Conv(3 * x.shape[-1], (1, 1), padding="valid", use_bias=False)(out)
         q, k, v = jp.split(qkv, 3, axis=-1)
 
         bs, h, w, c = q.shape
