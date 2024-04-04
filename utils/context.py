@@ -8,6 +8,7 @@ from pathlib import Path
 from collections import defaultdict
 from typing import Union, Sequence, Dict
 from numbers import Number
+from typing import Union, Sequence, Dict
 
 
 def save_state(state: train_state.TrainState, path: Union[str, Path], step: int):
